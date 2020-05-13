@@ -228,7 +228,7 @@ static void fetch_4x4(uint8_t dst[4*4*4], const uint8_t *src, int width, int hei
 	for (int row = 0; row < 4; row++) {
 		const uint8_t *line;
 		if (y + row < height) {
-			line = src + y*width*4;
+			line = src + (y + row)*width*4;
 		} else {
 			line = src + (height - 1)*width*4;
 		}
@@ -313,6 +313,33 @@ typedef struct sptex_header {
 	uint32_t num_mips;
 	sptex_mip mips[16];
 } sptex_header;
+
+typedef struct dds_header {
+	char magic[4];
+	uint32_t size;
+	uint32_t flags;
+	uint32_t height;
+	uint32_t width;
+	uint32_t pitch_or_linear_size;
+	uint32_t depth;
+	uint32_t mip_map_count;
+	uint32_t reserved[11];
+	uint32_t pixelformat_size;
+	uint32_t pixelformat_flags;
+	char pixelformat_fourcc[4];
+	uint32_t pixelformat_bitcount;
+	uint32_t pixelformat_r_mask;
+	uint32_t pixelformat_g_mask;
+	uint32_t pixelformat_b_mask;
+	uint32_t pixelformat_a_mask;
+	uint32_t caps[4];
+	uint32_t reserved2;
+	uint32_t dxgi_format;
+	uint32_t resource_dimension;
+	uint32_t misc_flag;
+	uint32_t array_size;
+	uint32_t misc_flags2;
+} dds_header;
 
 int main(int argc, char **argv)
 {
@@ -401,41 +428,42 @@ int main(int argc, char **argv)
 	if (show_help) {
 		printf("%s",
 			"Usage: sf-texcomp -i <input> -o <output> -f <format> [options]\n"
-			"  -i / --input <path>: Input filename in any format stb_image supports\n"
-			"  -o / --output <path>: Destination filename\n"
-			"  -f / --format <format>: Compressed texture pixel format (see below)\n"
-			"  -c / --container <type>: Output container format (detected from filename if absent, see below)\n"
-			"  -j / --threads <num>: Number of threads to use\n"
-			"  --level <level>: Compression level 1-20 (default 10)\n"
-			"  --max-extent <extent>: Clamp the resolution of the image in pixels\n"
-			"                Maintains aspect ratio.\n"
-			"  --resolution <width> <height>: Force output resolution to a specific size\n"
-			"                        Will resize the image larger if necessary\n"
-			"  --max-mips <num>: Maximum number of mipmaps to generate\n"
-			"  --crop-alpha: Crop the transparent areas around the image\n"
-			"  --linear: Treat the data as linear instead of sRGB\n"
-			"  --premultiply: Premultiply the input RGB by alpha\n"
-			"  --edge <mode>: Edge addressing mode (clamp, reflect, wrap, zero)\n"
-			"  --edge-h <mode>: Horizontal edge addressing mode (clamp, reflect, wrap, zero)\n"
-			"  --edge-v <mode>: Vertical edge addressing mode (clamp, reflect, wrap, zero)\n"
-			"  --filter <filter>: Filtering mode (default, box, triangle, b-spline, catmull-rom, mitchell)\n"
-			"  --target <target>: Target GPU to optimize for (amd, nvidia)\n"
-			"  --output-ignores-alpha: The output textures may have alpha even for opaque colors\n"
+			"    -i / --input <path>: Input filename in any format stb_image supports\n"
+			"    -o / --output <path>: Destination filename\n"
+			"    -f / --format <format>: Compressed texture pixel format (see below)\n"
+			"    -c / --container <type>: Output container format (detected from filename if absent, see below)\n"
+			"    -j / --threads <num>: Number of threads to use\n"
+			"    -v / --verbose: Verbose output\n"
+			"    --level <level>: Compression level 1-20 (default 10)\n"
+			"    --max-extent <extent>: Clamp the resolution of the image in pixels\n"
+			"                  Maintains aspect ratio.\n"
+			"    --resolution <width> <height>: Force output resolution to a specific size\n"
+			"                          Will resize the image larger if necessary\n"
+			"    --max-mips <num>: Maximum number of mipmaps to generate\n"
+			"    --crop-alpha: Crop the transparent areas around the image\n"
+			"    --linear: Treat the data as linear instead of sRGB\n"
+			"    --premultiply: Premultiply the input RGB by alpha\n"
+			"    --edge <mode>: Edge addressing mode (clamp, reflect, wrap, zero)\n"
+			"    --edge-h <mode>: Horizontal edge addressing mode (clamp, reflect, wrap, zero)\n"
+			"    --edge-v <mode>: Vertical edge addressing mode (clamp, reflect, wrap, zero)\n"
+			"    --filter <filter>: Filtering mode (default, box, triangle, b-spline, catmull-rom, mitchell)\n"
+			"    --target <target>: Target GPU to optimize for (amd, nvidia)\n"
+			"    --output-ignores-alpha: The output textures may have alpha even for opaque colors\n"
 		);
 
 		printf("Supported formats:\n");
 		for (size_t i = 0; i < array_size(format_list); i++) {
 			const pixel_format *fmt = &format_list[i];
-			printf("  %4s: %s", fmt->name, fmt->description);
+			printf("  %8s: %s\n", fmt->name, fmt->description);
 		}
 
 		printf("Supported containers:\n");
 		for (size_t i = 0; i < array_size(container_list); i++) {
 			const container_type *type = &container_list[i];
 			if (type->extension) {
-				printf("  %4s: %s %s", type->name, type->extension, type->description);
+				printf("  %8s: %s %s\n", type->name, type->extension, type->description);
 			} else {
-				printf("  %4s: %s", type->name, type->description);
+				printf("  %8s: %s\n", type->name, type->description);
 			}
 		}
 
@@ -446,7 +474,7 @@ int main(int argc, char **argv)
 
 	if (!input_file) failf("Input file required: -i <input>");
 	if (!output_file) failf("Output file required: -o <output>");
-	if (format == FORMAT_ERROR) failf("Format: -o <format> (see --help for available formats)");
+	if (format == FORMAT_ERROR) failf("Format required: -f <format> (see --help for available formats)");
 	if (max_extent == 0) failf("Maximum extent can't be zero, don't specify anything or use -1 to disable");
 	if (max_extent < 0) max_extent = -1;
 	if (max_mips == 0) failf("Maximum mipmap count can't be zero, don't specify anything or use -1 to disable");
@@ -525,7 +553,7 @@ int main(int argc, char **argv)
 				original_width, original_height,
 				input_width, input_height);
 		}
-	} else if (input_width > max_extent || input_height > max_extent) {
+	} else if (max_extent > 0 && (input_width > max_extent || input_height > max_extent)) {
 		if (input_width > input_height) {
 			input_height = (int)(max_extent * ((double)input_height / (double)input_width));
 			input_width = max_extent;
@@ -597,7 +625,7 @@ int main(int argc, char **argv)
 	}
 
 	size_t mip_data_offset = 0;
-	while (!max_mips || num_mips < max_mips) {
+	while (max_mips <= 0 || num_mips < max_mips) {
 		int mip_ix = num_mips++;
 
 		uint8_t *mip_pixels;
@@ -633,6 +661,8 @@ int main(int argc, char **argv)
 		mip->data = (uint8_t*)malloc(mip->data_size);
 		if (!mip->data) failf("Failed to allocate memory for compressed data");
 
+		size_t block_stride = mip->blocks_x * fmt.block_size;
+
 		int blocks_x = mip->blocks_x, blocks_y = mip->blocks_y;
 		switch (format) {
 
@@ -643,7 +673,7 @@ int main(int argc, char **argv)
 		case FORMAT_BC1: {
 			uint32_t l = level_to_rgbcx[level];
 			parallel_for(num_threads, blocks_y, [&](int y) {
-				uint8_t *dst = mip->data + (size_t)y * (size_t)mip_width * 4;
+				uint8_t *dst = mip->data + (size_t)y * block_stride;
 				for (int x = 0; x < blocks_x; x++) {
 					uint8_t src[4*4*4];
 					fetch_4x4(src, mip_pixels, mip_width, mip_height, x, y);
@@ -656,7 +686,7 @@ int main(int argc, char **argv)
 		case FORMAT_BC3: {
 			uint32_t l = level_to_rgbcx[level];
 			parallel_for(num_threads, blocks_y, [&](int y) {
-				uint8_t *dst = mip->data + (size_t)y * (size_t)mip_width * 4;
+				uint8_t *dst = mip->data + (size_t)y * block_stride;
 				for (int x = 0; x < blocks_x; x++) {
 					uint8_t src[4*4*4];
 					fetch_4x4(src, mip_pixels, mip_width, mip_height, x, y);
@@ -669,7 +699,7 @@ int main(int argc, char **argv)
 		case FORMAT_BC4: {
 			uint32_t l = level_to_rgbcx[level];
 			parallel_for(num_threads, blocks_y, [&](int y) {
-				uint8_t *dst = mip->data + (size_t)y * (size_t)mip_width * 4;
+				uint8_t *dst = mip->data + (size_t)y * block_stride;
 				for (int x = 0; x < blocks_x; x++) {
 					uint8_t src[4*4*4];
 					fetch_4x4(src, mip_pixels, mip_width, mip_height, x, y);
@@ -682,7 +712,7 @@ int main(int argc, char **argv)
 		case FORMAT_BC5: {
 			uint32_t l = level_to_rgbcx[level];
 			parallel_for(num_threads, blocks_y, [&](int y) {
-				uint8_t *dst = mip->data + (size_t)y * (size_t)mip_width * 4;
+				uint8_t *dst = mip->data + (size_t)y * block_stride;
 				for (int x = 0; x < blocks_x; x++) {
 					uint8_t src[4*4*4];
 					fetch_4x4(src, mip_pixels, mip_width, mip_height, x, y);
@@ -701,7 +731,7 @@ int main(int argc, char **argv)
 			}
 
 			parallel_for(num_threads, blocks_y, [&](int y) {
-				uint8_t *dst = mip->data + (size_t)y * (size_t)mip_width * 4;
+				uint8_t *dst = mip->data + (size_t)y * block_stride;
 				for (int x = 0; x < blocks_x; x++) {
 					uint8_t src[4*4*4];
 					fetch_4x4(src, mip_pixels, mip_width, mip_height, x, y);
@@ -734,7 +764,7 @@ int main(int argc, char **argv)
 	free(pixels);
 
 	// TODO: Windows UTF-16
-	FILE *f = fopen(output_file, "w");
+	FILE *f = fopen(output_file, "wb");
 	if (!f) failf("Failed to open output file: %s", output_file);
 
 	switch (container) {
@@ -773,6 +803,46 @@ int main(int argc, char **argv)
 				memset(mip, 0, sizeof(sptex_mip));
 			}
 		}
+
+		write_data(f, &header, sizeof(header));
+		write_mips(f, mips, num_mips);
+
+	} break;
+
+	case CONTAINER_DDS: {
+
+		dds_header header = { 0 };
+		memcpy(header.magic, "DDS ", 4);
+		header.size = 124;
+		header.flags = 0xa1007; // CAPS|HEIGHT|WIDTH|PIXELFORMAT|MIPMAPCOUNT|LINEARSIZE
+		header.height = (uint32_t)input_height;
+		header.width = (uint32_t)input_width;
+		header.pitch_or_linear_size = (uint32_t)mips[0].data_size;
+		header.depth = 0;
+		header.mip_map_count = (uint32_t)num_mips;
+		if (format == FORMAT_RGBA8) {
+			header.pixelformat_flags = 0x41; // RGB|ALPHAPIXELS
+			header.pixelformat_bitcount = 32;
+			header.pixelformat_r_mask = 0x000000ff;
+			header.pixelformat_g_mask = 0x0000ff00;
+			header.pixelformat_b_mask = 0x00ff0000;
+			header.pixelformat_a_mask = 0xff000000;
+		} else {
+			header.pixelformat_flags = 0x4; // FOURCC
+		}
+		header.pixelformat_size = 32;
+		memcpy(header.pixelformat_fourcc, "DX10", 4);
+		switch (format) {
+		case FORMAT_RGBA8: header.dxgi_format = res_opts.linear ? 28 : 29; break; // R8G8B8A8_UNORM(_SRGB)
+		case FORMAT_BC1: header.dxgi_format = res_opts.linear ? 71 : 72; break; // BC1_UNORM(_SRGB)
+		case FORMAT_BC3: header.dxgi_format = res_opts.linear ? 77 : 78; break; // BC3_UNORM(_SRGB)
+		case FORMAT_BC4: header.dxgi_format = 80; break; // BC4_UNORM
+		case FORMAT_BC5: header.dxgi_format = 83; break; // BC5_UNORM TODO: snorm?
+		case FORMAT_BC7: header.dxgi_format = res_opts.linear ? 98 : 99; break; // BC7_UNORM(_SRGB)
+		default: header.dxgi_format = 0; break;
+		}
+		header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
+		header.array_size = 1;
 
 		write_data(f, &header, sizeof(header));
 		write_mips(f, mips, num_mips);
