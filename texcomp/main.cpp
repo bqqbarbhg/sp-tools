@@ -72,6 +72,7 @@ typedef enum container_enum {
 	CONTAINER_SPTEX,
 	CONTAINER_DDS,
 	CONTAINER_KTX,
+	CONTAINER_ASTC,
 
 	CONTAINER_COUNT,
 	CONTAINER_ERROR = 0x7fffffff,
@@ -89,6 +90,7 @@ const container_type container_list[] = {
 	{ "sptex", ".sptex", CONTAINER_SPTEX, "SP-tools container" },
 	{ "dds", ".dds", CONTAINER_DDS, "DirectDraw Surface" },
 	{ "ktx", ".ktx", CONTAINER_KTX, "Khronos KTX container" },
+	{ "astc", ".astc", CONTAINER_ASTC, "astcenc ASTC container" },
 };
 
 typedef struct edge_mode {
@@ -222,6 +224,30 @@ bc7enc_compress_block_params level_to_bc7_params[] = {
 	{ 64, {0,0,0,0}, 4, 0, 0, 1, 1, 1, }, // 20
 };
 
+astcenc_quality level_to_astcenc_quality[] = {
+	{ 0 }, // 0 (invalid)
+	{ 4, 1.0f, 0.5f, 30.0f, 50, 1 }, // 1
+	{ 5, 1.05f, 0.5f, 32.0f, 50, 1 }, // 2
+	{ 6, 1.1f, 0.5f, 34.0f, 55, 1 }, // 3
+	{ 7, 1.3f, 0.55f, 36.0f, 55, 1 }, // 4
+	{ 8, 1.1f, 0.55f, 38.0f, 60, 1 }, // 5
+	{ 9, 1.15f, 0.55f, 40.0f, 60, 1 }, // 6
+	{ 10, 1.15f, 0.55f, 42.0f, 65, 1 }, // 7
+	{ 15, 1.2f, 0.6f, 44.0f, 65, 2 }, // 8
+	{ 20, 1.2f, 0.65f, 56.0f, 75, 2 }, // 9
+	{ 25, 1.2f, 0.75f, 50.0f, 75, 2 }, // 10
+	{ 30, 1.3f, 0.85f, 55.0f, 80, 2 }, // 11
+	{ 45, 1.4f, 0.9f, 60.0f, 80, 2 }, // 12
+	{ 50, 1.5f, 0.9f, 65.0f, 85, 2 }, // 13
+	{ 60, 1.6f, 0.95f, 70.0f, 90, 4 }, // 14
+	{ 80, 2.0f, 0.96f, 80.0f, 95, 4 }, // 15
+	{ 100, 2.5f, 0.97f, 90.0f, 95, 4 }, // 16
+	{ 200, 3.0f, 0.97f, 100.0f, 90, 4 }, // 17
+	{ 300, 4.0f, 0.97f, 120.0f, 100, 4 }, // 18
+	{ 400, 5.0f, 0.98f, 140.0f, 100, 4 }, // 19
+	{ (1<<10), 1000.0f, 0.99f, 999.0f, 100, 4 }, // 20
+};
+
 static void fetch_4x4(uint8_t dst[4*4*4], const uint8_t *src, int width, int height, int block_x, int block_y)
 {
 	int x = block_x * 4, y = block_y * 4;
@@ -234,7 +260,7 @@ static void fetch_4x4(uint8_t dst[4*4*4], const uint8_t *src, int width, int hei
 		}
 
 		uint8_t *d = dst + row * (4*4);
-		if (x + 4 < width) {
+		if (x + 4 <= width) {
 			memcpy(d, line + x * 4, 16);
 		} else {
 			for (int col = 0; col < 4; col++) {
@@ -340,6 +366,16 @@ typedef struct dds_header {
 	uint32_t array_size;
 	uint32_t misc_flags2;
 } dds_header;
+
+typedef struct astc_header {
+	char magic[4];
+	uint8_t xdim;
+	uint8_t ydim;
+	uint8_t zdim;
+	uint8_t width[3];
+	uint8_t height[3];
+	uint8_t depth[3];
+} astc_header;
 
 int main(int argc, char **argv)
 {
@@ -622,6 +658,10 @@ int main(int argc, char **argv)
 		bc7enc_compress_block_init();
 		break;
 
+	case FORMAT_ASTC_4X4:
+		astcenc_init();
+		break;
+
 	}
 
 	size_t mip_data_offset = 0;
@@ -747,6 +787,8 @@ int main(int argc, char **argv)
 			opts.num_threads = num_threads;
 			opts.block_width = fmt.block_width;
 			opts.block_height = fmt.block_height;
+			opts.quality = level_to_astcenc_quality[level];
+			opts.verbose = verbose && mip_ix == 0;
 
 			if (!astcenc_encode_image(&opts, mip->data, mip_pixels, mip_width, mip_height)) {
 				failf("Failed to allocate memory for ASTC source image");
@@ -843,6 +885,30 @@ int main(int argc, char **argv)
 		}
 		header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
 		header.array_size = 1;
+
+		write_data(f, &header, sizeof(header));
+		write_mips(f, mips, num_mips);
+
+	} break;
+
+	case CONTAINER_KTX: {
+		failf("Unimplemented");
+	} break;
+
+	case CONTAINER_ASTC: {
+
+		astc_header header;
+		memcpy(header.magic, "\x13\xAB\xA1\x5C", 4);
+		header.xdim = (uint8_t)fmt.block_width;
+		header.ydim = (uint8_t)fmt.block_height;
+		header.zdim = 1;
+		header.width[0] = (uint8_t)(input_width & 0xff);
+		header.width[1] = (uint8_t)((input_width >> 8) & 0xff);
+		header.width[2] = (uint8_t)((input_width >> 16) & 0xff);
+		header.height[0] = (uint8_t)(input_width & 0xff);
+		header.height[1] = (uint8_t)((input_width >> 8) & 0xff);
+		header.height[2] = (uint8_t)((input_width >> 16) & 0xff);
+		header.depth[0] = 1;
 
 		write_data(f, &header, sizeof(header));
 		write_mips(f, mips, num_mips);
