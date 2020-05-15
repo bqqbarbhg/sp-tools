@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+typedef void (*astcenc_progress_fn)(void *user, size_t current, size_t total);
+
 typedef struct astcenc_quality {
 	int partitions_to_test;
 	float oplimit;
@@ -18,6 +20,8 @@ typedef struct astcenc_opts {
 	int block_height;
 	bool verbose;
 	astcenc_quality quality;
+	astcenc_progress_fn progress_fn;
+	void *progress_user;
 } astcenc_opts;
 
 void astcenc_init();

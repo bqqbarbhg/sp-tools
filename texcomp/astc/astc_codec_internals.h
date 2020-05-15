@@ -15,6 +15,8 @@
 // under the License.
 // ----------------------------------------------------------------------------
 
+#include "../astcenc.h"
+
 /**
  * @brief Functions and data declarations.
  */

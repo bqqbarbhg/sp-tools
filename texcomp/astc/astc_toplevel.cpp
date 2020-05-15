@@ -193,6 +193,10 @@ struct encode_astc_image_info
 	swizzlepattern swz_decode;
 	const astc_codec_image* input_image;
 	astc_codec_image* output_image;
+
+	// sp modification
+	astcenc_progress_fn progress_fn;
+	void *progress_user;
 };
 
 static void encode_astc_image_threadfunc(
@@ -278,6 +282,12 @@ static void encode_astc_image_threadfunc(
 
 					ctr = thread_count - 1;
 					pctr++;
+
+					if (blk->progress_fn && thread_id == 0) {
+						size_t total = (size_t)xblocks * (size_t)yblocks * (size_t)zblocks;
+						size_t current = (size_t)x + 1 + (size_t)xblocks * ((size_t)y + (size_t)z * (size_t)yblocks);
+						blk->progress_fn(blk->progress_user, current, total);
+					}
 				}
 				else
 					ctr--;
@@ -312,7 +322,9 @@ void encode_astc_image(
 	swizzlepattern swz_decode,
 	uint8_t* buffer,
 	int pack_and_unpack,
-	int threadcount
+	int threadcount,
+	astcenc_progress_fn progress_fn,
+	void *progress_user
 ) {
 	// before entering into the multi-threaded routine, ensure that the block size descriptors
 	// and the partition table descriptors needed actually exist.
@@ -330,6 +342,8 @@ void encode_astc_image(
 	ai.swz_decode = swz_decode;
 	ai.input_image = input_image;
 	ai.output_image = output_image;
+	ai.progress_fn = progress_fn;
+	ai.progress_user = progress_user;
 
 	launch_threads(threadcount, encode_astc_image_threadfunc, &ai);
 
@@ -363,7 +377,7 @@ static void store_astc_file(
 		exit(1);
 	}
 
-	encode_astc_image(input_image, nullptr, xdim, ydim, zdim, ewp, decode_mode, swz_encode, swz_encode, buffer, 0, threadcount);
+	encode_astc_image(input_image, nullptr, xdim, ydim, zdim, ewp, decode_mode, swz_encode, swz_encode, buffer, 0, threadcount, NULL, NULL);
 
 	end_coding_time = get_time();
 
@@ -416,7 +430,7 @@ static astc_codec_image *pack_and_unpack_astc_image(
 	astc_codec_image *img = alloc_image(bitness, xsize, ysize, zsize, 0);
 
 	encode_astc_image(input_image, img, xdim, ydim, zdim, ewp, decode_mode,
-	                  swz_encode, swz_decode, nullptr, 1, threadcount);
+	                  swz_encode, swz_decode, nullptr, 1, threadcount, NULL, NULL);
 
 	return img;
 }

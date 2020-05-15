@@ -9,12 +9,14 @@
 #include "rgbcx.h"
 #include "astcenc.h"
 #include "image.h"
+#include "../sp_tools_common.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <string.h>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -42,6 +44,7 @@ typedef enum format_enum {
 	FORMAT_BC5,
 	FORMAT_BC7,
 	FORMAT_ASTC_4X4,
+	FORMAT_ASTC_8X8,
 
 	FORMAT_COUNT,
 	FORMAT_ERROR = 0x7fffffff,
@@ -65,6 +68,7 @@ const pixel_format format_list[] = {
 	{ { 'b','c','5',' ' }, FORMAT_BC5, 4,4,16, "bc5", "R+G Direct3D Block Compression" },
 	{ { 'b','c','7',' ' }, FORMAT_BC7, 4,4,16, "bc7", "RGB(+A) Direct3D Block Compression" },
 	{ { 'a','s','4','4' }, FORMAT_ASTC_4X4, 4,4,16, "astc4x4", "RGB(+A) ASTC Compression (4x4 blocks)" },
+	{ { 'a','s','8','8' }, FORMAT_ASTC_8X8, 8,8,16, "astc8x8", "RGB(+A) ASTC Compression (8x8 blocks)" },
 };
 
 typedef enum container_enum {
@@ -272,6 +276,15 @@ static void fetch_4x4(uint8_t dst[4*4*4], const uint8_t *src, int width, int hei
 	}
 }
 
+static bool g_verbose;
+
+static void progress_update(void *user, size_t current, size_t total)
+{
+	if (g_verbose) {
+		printf("%zu / %zu\r", current, total);
+	}
+}
+
 template <typename F>
 static void parallel_for(int num_threads, int num, F f) {
 	if (num_threads > num) num_threads = num;
@@ -284,19 +297,21 @@ static void parallel_for(int num_threads, int num, F f) {
 		threads.reserve(num_threads - 1);
 		std::atomic_int a_index = 0;
 		for (int thread_i = 0; thread_i < num_threads - 1; thread_i++) {
-			threads.push_back(std::thread([&]() {
+			threads.emplace_back([&]() {
 				for (;;) {
 					int index = a_index.fetch_add(1, std::memory_order_relaxed);
-					if (index > num) return;
+					if (index >= num) return;
 					f(index);
 				}
-			}));
+			});
 		}
 
 		for (;;) {
 			int index = a_index.fetch_add(1, std::memory_order_relaxed);
-			if (index > num) return;
+			if (index >= num) break;
 			f(index);
+
+			progress_update(nullptr, (size_t)index + 1, (size_t)num);
 		}
 
 		for (std::thread &thread : threads) {
@@ -323,8 +338,10 @@ static void write_mips(FILE *f, const mip_data *mips, int num_mips)
 
 typedef struct sptex_mip {
 	uint32_t width, height;
-	uint32_t data_offset;
-	uint32_t data_size;
+	uint32_t compressed_data_offset;
+	uint32_t compressed_data_size;
+	uint32_t uncompressed_data_size;
+	sp_compression_type compression_type;
 } sptex_mip;
 
 typedef struct sptex_header {
@@ -415,6 +432,8 @@ int main(int argc, char **argv)
 			res_opts.linear = true;
 		} else if (!strcmp(arg, "--premultiply")) {
 			premultiply = true;
+		} else if (!strcmp(arg, "--no-mips")) {
+			max_mips = 1;
 		} else if (!strcmp(arg, "--output-ignores-alpha")) {
 			output_ignores_alpha = true;
 		} else if (left >= 1) {
@@ -427,7 +446,7 @@ int main(int argc, char **argv)
 				output_file = argv[++argi];
 			} else if (!strcmp(arg, "-f") || !strcmp(arg, "--format")) {
 				format = parse_format(argv[++argi]);
-			} else if (!strcmp(arg, "--level")) {
+			} else if (!strcmp(arg, "-l") || !strcmp(arg, "--level")) {
 				level = atoi(argv[++argi]);
 				if (level <= 0 || level > 20) {
 					failf("Invalid level %d, must be between 1-20", level);
@@ -470,12 +489,13 @@ int main(int argc, char **argv)
 			"    -c / --container <type>: Output container format (detected from filename if absent, see below)\n"
 			"    -j / --threads <num>: Number of threads to use\n"
 			"    -v / --verbose: Verbose output\n"
-			"    --level <level>: Compression level 1-20 (default 10)\n"
+			"    -l / --level <level>: Compression level 1-20 (default 10)\n"
 			"    --max-extent <extent>: Clamp the resolution of the image in pixels\n"
 			"                  Maintains aspect ratio.\n"
 			"    --resolution <width> <height>: Force output resolution to a specific size\n"
 			"                          Will resize the image larger if necessary\n"
 			"    --max-mips <num>: Maximum number of mipmaps to generate\n"
+			"    --no-mips: Don't generate mipmap levels, equivalent to `--max-mips 1`\n"
 			"    --crop-alpha: Crop the transparent areas around the image\n"
 			"    --linear: Treat the data as linear instead of sRGB\n"
 			"    --premultiply: Premultiply the input RGB by alpha\n"
@@ -556,6 +576,8 @@ int main(int argc, char **argv)
 		printf("edge_v: %s\n", edge_list[res_opts.edge_v].name);
 		printf("filter: %s\n", filter_list[res_opts.filter].name);
 	}
+
+	g_verbose = verbose;
 
 	// -- Load image data
 
@@ -659,6 +681,7 @@ int main(int argc, char **argv)
 		break;
 
 	case FORMAT_ASTC_4X4:
+	case FORMAT_ASTC_8X8:
 		astcenc_init();
 		break;
 
@@ -781,7 +804,8 @@ int main(int argc, char **argv)
 			});
 		} break;
 
-		case FORMAT_ASTC_4X4: {
+		case FORMAT_ASTC_4X4:
+		case FORMAT_ASTC_8X8: {
 			astcenc_opts opts = { 0 };
 			opts.linear = res_opts.linear;
 			opts.num_threads = num_threads;
@@ -789,6 +813,7 @@ int main(int argc, char **argv)
 			opts.block_height = fmt.block_height;
 			opts.quality = level_to_astcenc_quality[level];
 			opts.verbose = verbose && mip_ix == 0;
+			opts.progress_fn = &progress_update;
 
 			if (!astcenc_encode_image(&opts, mip->data, mip_pixels, mip_width, mip_height)) {
 				failf("Failed to allocate memory for ASTC source image");
@@ -820,10 +845,17 @@ int main(int argc, char **argv)
 			failf("sptex supports only up to 16 mip levels");
 		}
 
+		sp_compression_type compression_type = SP_COMPRESSION_ZSTD;
+		size_t bound = sp_get_compression_bound(compression_type, mip_data_offset);
+		char *compress_buf = (char*)malloc(bound);
+		if (!compress_buf) failf("Failed to allocate lossless compression buffer");
+
+		size_t compress_offset = 0;
+
 		sptex_header header;
 		memcpy(header.file_magic, "sptx", 4);
 		header.file_version = 1;
-		header.file_size = sizeof(sptex_header) + mip_data_offset;
+		header.file_size = (uint32_t)(sizeof(sptex_header) + mip_data_offset);
 		memcpy(header.fmt_magic, fmt.magic, 4);
 		header.width = (uint32_t)input_width;
 		header.height = (uint32_t)input_height;
@@ -837,17 +869,47 @@ int main(int argc, char **argv)
 		for (int i = 0; i < 16; i++) {
 			sptex_mip *mip = &header.mips[i];
 			if (i < num_mips) {
-				mip->data_size = mips[i].data_size;
-				mip->data_offset = mips[i].data_offset;
+				size_t compressed_size = sp_compress_buffer(compression_type,
+					compress_buf + compress_offset, bound - compress_offset,
+					mips[i].data, mips[i].data_size, level);
+
+				double no_compress_ratio = 1.05;
+				sp_compression_type mip_type = compression_type;
+				if ((double)mips[i].data_size / (double)compressed_size < no_compress_ratio) {
+					mip_type = SP_COMPRESSION_NONE;
+					memcpy(compress_buf + compress_offset, mips[i].data, mips[i].data_size);
+					compressed_size = mips[i].data_size;
+				}
+
+				if (verbose) {
+					if (mips[i].data_size > 1000) {
+						printf("Compressed mip %u from %.1fkB to %.1fkB, ratio %.2f\n",
+							i, (double)mips[i].data_size / 1000.0, (double)compressed_size / 1000.0,
+							(double)mips[i].data_size / (double)compressed_size);
+					} else {
+						printf("Compressed mip %d from %zub to %zub, ratio %.2f\n",
+							i, mips[i].data_size, compressed_size,
+							(double)mips[i].data_size / (double)compressed_size);
+					}
+				}
+
 				mip->width = mips[i].width;
 				mip->height = mips[i].height;
+				mip->compressed_data_size = (uint32_t)compressed_size;
+				mip->compressed_data_offset = (uint32_t)compress_offset;
+				mip->uncompressed_data_size = (uint32_t)mips[i].data_size;
+				mip->compression_type = compression_type;
+
+				compress_offset += compressed_size;
 			} else {
 				memset(mip, 0, sizeof(sptex_mip));
 			}
 		}
 
 		write_data(f, &header, sizeof(header));
-		write_mips(f, mips, num_mips);
+		write_data(f, compress_buf, compress_offset);
+
+		free(compress_buf);
 
 	} break;
 
@@ -909,6 +971,8 @@ int main(int argc, char **argv)
 		header.height[1] = (uint8_t)((input_width >> 8) & 0xff);
 		header.height[2] = (uint8_t)((input_width >> 16) & 0xff);
 		header.depth[0] = 1;
+		header.depth[1] = 0;
+		header.depth[2] = 0;
 
 		write_data(f, &header, sizeof(header));
 		write_mips(f, mips, num_mips);

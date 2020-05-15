@@ -14,7 +14,9 @@ void encode_astc_image(
 	swizzlepattern swz_decode,
 	uint8_t* buffer,
 	int pack_and_unpack,
-	int threadcount
+	int threadcount,
+	astcenc_progress_fn progress_fn,
+	void *progress_user
 );
 
 void astcenc_init()
@@ -66,18 +68,47 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	float avg_texel_error = powf(0.1f, opts->quality.dblimit * 0.1f) * 65535.0f * 65535.0f;
 	ewp.texel_avg_error_limit = avg_texel_error;
 
-	int padding = MAX(ewp.mean_stdev_radius, ewp.alpha_radius);
+	float max_color_component_weight = MAX(MAX(ewp.rgba_weights[0], ewp.rgba_weights[1]),
+										   MAX(ewp.rgba_weights[2], ewp.rgba_weights[3]));
+	ewp.rgba_weights[0] = MAX(ewp.rgba_weights[0], max_color_component_weight / 1000.0f);
+	ewp.rgba_weights[1] = MAX(ewp.rgba_weights[1], max_color_component_weight / 1000.0f);
+	ewp.rgba_weights[2] = MAX(ewp.rgba_weights[2], max_color_component_weight / 1000.0f);
+	ewp.rgba_weights[3] = MAX(ewp.rgba_weights[3], max_color_component_weight / 1000.0f);
 
-	astc_codec_image *input_image = astc_img_from_unorm8x4_array(src, width, height, padding, 0);
-	if (!input_image) return false;
+		int padding = MAX(ewp.mean_stdev_radius, ewp.alpha_radius);
 
-	int xsize = input_image->xsize;
-	int ysize = input_image->ysize;
-	int zsize = input_image->zsize;
+		astc_codec_image *input_image = astc_img_from_unorm8x4_array(src, width, height, padding, 0);
+		if (!input_image) return false;
 
-	int xblocks = (xsize + xdim - 1) / xdim;
-	int yblocks = (ysize + ydim - 1) / ydim;
-	int zblocks = (zsize + zdim - 1) / zdim;
+		int xsize = input_image->xsize;
+		int ysize = input_image->ysize;
+		int zsize = input_image->zsize;
+
+		int xblocks = (xsize + xdim - 1) / xdim;
+		int yblocks = (ysize + ydim - 1) / ydim;
+		int zblocks = (zsize + zdim - 1) / zdim;
+
+		expand_block_artifact_suppression(xdim, ydim, zdim, &ewp);
+
+		int linearize_srgb = 0;
+
+		if (padding > 0 ||
+			ewp.rgb_mean_weight != 0.0f || ewp.rgb_stdev_weight != 0.0f ||
+			ewp.alpha_mean_weight != 0.0f || ewp.alpha_stdev_weight != 0.0f)
+		{
+			// Clamp texels outside the actual image area.
+		fill_image_padding_area(input_image);
+
+		compute_averages_and_variances(
+			input_image,
+			ewp.rgb_power,
+			ewp.alpha_power,
+			ewp.mean_stdev_radius,
+			ewp.alpha_radius,
+			linearize_srgb,
+			swz_encode,
+			opts->num_threads);
+	}
 
 	astc_decode_mode mode = DECODE_LDR_SRGB;
 	if (opts->linear) mode = DECODE_LDR;
@@ -113,7 +144,7 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	}
 
 	encode_astc_image(input_image, NULL, xdim, ydim, zdim, &ewp, mode,
-		swz_encode, swz_decode, dst, 0, opts->num_threads);
+		swz_encode, swz_decode, dst, 0, opts->num_threads, opts->progress_fn, opts->progress_user);
 
 	free_image(input_image);
 

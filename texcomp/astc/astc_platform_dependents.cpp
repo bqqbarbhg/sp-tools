@@ -168,7 +168,7 @@ void launch_threads(
 
 	// Otherwise spawn worker threads
 	launch_desc *thread_descs = new launch_desc[thread_count];
-	for (int i = 0; i < thread_count; i++)
+	for (int i = 1; i < thread_count; i++)
 	{
 		thread_descs[i].thread_count = thread_count;
 		thread_descs[i].thread_id = i;
@@ -179,8 +179,10 @@ void launch_threads(
 		               launch_threads_helper, (void*)&(thread_descs[i]));
 	}
 
+	func(thread_count, 0, payload);
+
 	// ... and then wait for them to complete
-	for (int i = 0; i < thread_count; i++)
+	for (int i = 1; i < thread_count; i++)
 	{
 		pthread_join(thread_descs[i].thread_handle, nullptr);
 	}
