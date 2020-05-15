@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 void premultiply_alpha(uint8_t *data, int width, int height);
+void swizzle_rg_to_ga(uint8_t *data, int width, int height);
 
 typedef struct crop_rect {
 	int min_x, min_y;

@@ -32,8 +32,12 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	int zdim = 1;
 
 	swizzlepattern swz_encode = { 0,1,2,3 };
+	if (opts->swizzle[0] != ASTCENC_SWIZZLE_IDENTITY) swz_encode.r = (uint8_t)((int)opts->swizzle[0] - 1);
+	if (opts->swizzle[1] != ASTCENC_SWIZZLE_IDENTITY) swz_encode.g = (uint8_t)((int)opts->swizzle[1] - 1);
+	if (opts->swizzle[2] != ASTCENC_SWIZZLE_IDENTITY) swz_encode.b = (uint8_t)((int)opts->swizzle[2] - 1);
+	if (opts->swizzle[3] != ASTCENC_SWIZZLE_IDENTITY) swz_encode.a = (uint8_t)((int)opts->swizzle[3] - 1);
+
 	swizzlepattern swz_decode = { 0,1,2,3 };
-	// TODO: Normal map swizzle
 
 	error_weighting_params ewp = { 0 };
 
@@ -58,12 +62,25 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	ewp.rgba_weights[3] = 1.0f;
 	ewp.ra_normal_angular_scale = 0;
 
+	if (opts->rgba_weights[0] != 0.0f || opts->rgba_weights[1] != 0.0f || opts->rgba_weights[2] == 0.0f || opts->rgba_weights[3] != 0.0f) {
+		ewp.rgba_weights[0] = opts->rgba_weights[0];
+		ewp.rgba_weights[1] = opts->rgba_weights[1];
+		ewp.rgba_weights[2] = opts->rgba_weights[2];
+		ewp.rgba_weights[3] = opts->rgba_weights[3];
+	}
+
 	ewp.max_refinement_iters = opts->quality.max_iters;
 	ewp.block_mode_cutoff = (float)opts->quality.block_mode_cutoff / 100.0f;
 	ewp.partition_1_to_2_limit = opts->quality.oplimit;
 	ewp.lowest_correlation_cutoff = opts->quality.mincorrel;
 	ewp.partition_search_limit = opts->quality.partitions_to_test;
 	if (ewp.partition_search_limit > (1 << 10)) ewp.partition_search_limit = (1 << 10);
+
+	if (opts->normal_map) {
+		ewp.ra_normal_angular_scale = 1;
+		ewp.partition_1_to_2_limit = 1000.0f;
+		ewp.lowest_correlation_cutoff = 0.99f;
+	}
 
 	float avg_texel_error = powf(0.1f, opts->quality.dblimit * 0.1f) * 65535.0f * 65535.0f;
 	ewp.texel_avg_error_limit = avg_texel_error;
@@ -75,39 +92,39 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	ewp.rgba_weights[2] = MAX(ewp.rgba_weights[2], max_color_component_weight / 1000.0f);
 	ewp.rgba_weights[3] = MAX(ewp.rgba_weights[3], max_color_component_weight / 1000.0f);
 
-		int padding = MAX(ewp.mean_stdev_radius, ewp.alpha_radius);
+	int padding = MAX(ewp.mean_stdev_radius, ewp.alpha_radius);
 
-		astc_codec_image *input_image = astc_img_from_unorm8x4_array(src, width, height, padding, 0);
-		if (!input_image) return false;
+	astc_codec_image *input_image = astc_img_from_unorm8x4_array(src, width, height, padding, 0);
+	if (!input_image) return false;
 
-		int xsize = input_image->xsize;
-		int ysize = input_image->ysize;
-		int zsize = input_image->zsize;
+	int xsize = input_image->xsize;
+	int ysize = input_image->ysize;
+	int zsize = input_image->zsize;
 
-		int xblocks = (xsize + xdim - 1) / xdim;
-		int yblocks = (ysize + ydim - 1) / ydim;
-		int zblocks = (zsize + zdim - 1) / zdim;
+	int xblocks = (xsize + xdim - 1) / xdim;
+	int yblocks = (ysize + ydim - 1) / ydim;
+	int zblocks = (zsize + zdim - 1) / zdim;
 
-		expand_block_artifact_suppression(xdim, ydim, zdim, &ewp);
+	expand_block_artifact_suppression(xdim, ydim, zdim, &ewp);
 
-		int linearize_srgb = 0;
+	int linearize_srgb = 0;
 
-		if (padding > 0 ||
-			ewp.rgb_mean_weight != 0.0f || ewp.rgb_stdev_weight != 0.0f ||
-			ewp.alpha_mean_weight != 0.0f || ewp.alpha_stdev_weight != 0.0f)
-		{
-			// Clamp texels outside the actual image area.
-		fill_image_padding_area(input_image);
+	if (padding > 0 ||
+		ewp.rgb_mean_weight != 0.0f || ewp.rgb_stdev_weight != 0.0f ||
+		ewp.alpha_mean_weight != 0.0f || ewp.alpha_stdev_weight != 0.0f)
+	{
+		// Clamp texels outside the actual image area.
+	fill_image_padding_area(input_image);
 
-		compute_averages_and_variances(
-			input_image,
-			ewp.rgb_power,
-			ewp.alpha_power,
-			ewp.mean_stdev_radius,
-			ewp.alpha_radius,
-			linearize_srgb,
-			swz_encode,
-			opts->num_threads);
+	compute_averages_and_variances(
+		input_image,
+		ewp.rgb_power,
+		ewp.alpha_power,
+		ewp.mean_stdev_radius,
+		ewp.alpha_radius,
+		linearize_srgb,
+		swz_encode,
+		opts->num_threads);
 	}
 
 	astc_decode_mode mode = DECODE_LDR_SRGB;

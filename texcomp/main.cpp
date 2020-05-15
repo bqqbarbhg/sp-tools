@@ -406,6 +406,8 @@ int main(int argc, char **argv)
 	bool crop_alpha = false;
 	bool premultiply = false;
 	bool output_ignores_alpha = false;
+	bool normal_map = false;
+	bool decorrelate_remap = false;
 	int res_width = -1;
 	int res_height = -1;
 	int level = 10;
@@ -436,6 +438,10 @@ int main(int argc, char **argv)
 			max_mips = 1;
 		} else if (!strcmp(arg, "--output-ignores-alpha")) {
 			output_ignores_alpha = true;
+		} else if (!strcmp(arg, "--normal-map")) {
+			normal_map = true;
+		} else if (!strcmp(arg, "--decorrelate-remap")) {
+			decorrelate_remap = true;
 		} else if (left >= 1) {
 			if (left >= 2 && !strcmp(arg, "--resolution")) {
 				res_width = atoi(argv[++argi]);
@@ -505,6 +511,9 @@ int main(int argc, char **argv)
 			"    --filter <filter>: Filtering mode (default, box, triangle, b-spline, catmull-rom, mitchell)\n"
 			"    --target <target>: Target GPU to optimize for (amd, nvidia)\n"
 			"    --output-ignores-alpha: The output textures may have alpha even for opaque colors\n"
+			"    --normal-map: Optimize the content as a tangent-space normal map in RG\n"
+			"    --decorrelate-remap: Remap RG to GA (other channels will be undefined)\n"
+			"                         This helps decorrelating the channels in BC3 and ASTC\n"
 		);
 
 		printf("Supported formats:\n");
@@ -654,6 +663,27 @@ int main(int argc, char **argv)
 		}
 
 		apply_crop_rect(pixels, &input_width, &input_height, input_rect);
+	}
+
+	// -- Remap input image if the encoder doesn't handle it
+
+	if (decorrelate_remap) {
+		if (verbose) {
+			printf("Remapping input data for decorrelation (--decorrelate-remap)\n");
+		}
+
+		switch (format) {
+
+		case FORMAT_ASTC_4X4:
+		case FORMAT_ASTC_8X8:
+			// Nop, ASTC has internal swizzle
+			break;
+
+		default:
+			swizzle_rg_to_ga(pixels, input_width, input_height);
+			break;
+
+		}
 	}
 
 	// -- Generate mips and compress
@@ -814,6 +844,18 @@ int main(int argc, char **argv)
 			opts.quality = level_to_astcenc_quality[level];
 			opts.verbose = verbose && mip_ix == 0;
 			opts.progress_fn = &progress_update;
+			opts.normal_map = normal_map;
+
+			if (decorrelate_remap) {
+				opts.swizzle[0] = ASTCENC_SWIZZLE_R;
+				opts.swizzle[1] = ASTCENC_SWIZZLE_R;
+				opts.swizzle[2] = ASTCENC_SWIZZLE_R;
+				opts.swizzle[3] = ASTCENC_SWIZZLE_G;
+				opts.rgba_weights[0] = 1.0f;
+				opts.rgba_weights[1] = 0.0f;
+				opts.rgba_weights[2] = 0.0f;
+				opts.rgba_weights[3] = 1.0f;
+			}
 
 			if (!astcenc_encode_image(&opts, mip->data, mip_pixels, mip_width, mip_height)) {
 				failf("Failed to allocate memory for ASTC source image");

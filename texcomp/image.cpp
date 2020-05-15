@@ -13,6 +13,17 @@ void premultiply_alpha(uint8_t *data, int width, int height)
 	}
 }
 
+void swizzle_rg_to_ga(uint8_t *data, int width, int height)
+{
+	size_t num_pixels = (size_t)width * (size_t)width;
+	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
+		p[3] = p[1];
+		p[1] = p[0];
+		p[0] = 0;
+		p[2] = 0;
+	}
+}
+
 crop_rect get_crop_rect(uint8_t *data, int width, int height)
 {
 	crop_rect rect;
