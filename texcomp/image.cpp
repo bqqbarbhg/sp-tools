@@ -24,6 +24,15 @@ void swizzle_rg_to_ga(uint8_t *data, int width, int height)
 	}
 }
 
+void insert_channel(uint8_t *data, const uint8_t *chan_data, int chan, int width, int height)
+{
+	size_t num_pixels = (size_t)width * (size_t)width;
+	const uint8_t *s = chan_data;
+	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
+		p[chan] = *s++;
+	}
+}
+
 crop_rect get_crop_rect(uint8_t *data, int width, int height)
 {
 	crop_rect rect;
@@ -100,8 +109,9 @@ crop_rect get_crop_rect(uint8_t *data, int width, int height)
 	return rect;
 }
 
-void apply_crop_rect(uint8_t *data, int *width, int *height, crop_rect rect)
+void apply_crop_rect(uint8_t *data, int *p_width, int *p_height, crop_rect rect)
 {
+	int width = *p_width, height = *p_height;
 	uint8_t *dst = data;
 	uint8_t *src = data + (size_t)width*(size_t)rect.min_y*4 + (size_t)rect.min_x*4;
 	size_t line_size = (size_t)(rect.max_x - rect.min_x) * 4;
@@ -112,7 +122,7 @@ void apply_crop_rect(uint8_t *data, int *width, int *height, crop_rect rect)
 		dst += line_size;
 		src += pitch;
 	}
-	*width = rect.max_x - rect.min_x;
-	*height = rect.max_y - rect.min_y;
+	*p_width = rect.max_x - rect.min_x;
+	*p_height = rect.max_y - rect.min_y;
 }
 

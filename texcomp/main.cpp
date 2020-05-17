@@ -128,6 +128,8 @@ typedef struct resize_opts {
 	stbir_edge edge_h, edge_v;
 	stbir_filter filter;
 	int flags;
+	int channels;
+	int alpha_channel;
 	bool linear;
 } resize_opts;
 
@@ -180,7 +182,7 @@ static void image_resize(resize_opts opts, uint8_t *dst, int dst_width, int dst_
 	stbir_resize(
 		src, src_width, src_height, 0,
 		dst, dst_width, dst_height, 0,
-		STBIR_TYPE_UINT8, 4, 3, opts.flags,
+		STBIR_TYPE_UINT8, opts.channels, opts.alpha_channel, opts.flags,
 		opts.edge_h, opts.edge_v,
 		opts.filter, opts.filter,
 		opts.linear ? STBIR_COLORSPACE_LINEAR : STBIR_COLORSPACE_SRGB,
@@ -399,6 +401,7 @@ int main(int argc, char **argv)
 	int max_extent = -1;
 	int max_mips = -1;
 	const char *input_file = NULL;
+	const char *input_channel_file[4] = { NULL, NULL, NULL, NULL };
 	const char *output_file = NULL;
 	format_enum format = FORMAT_ERROR;
 	bool verbose = false;
@@ -415,6 +418,9 @@ int main(int argc, char **argv)
 	resize_opts res_opts = { STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT };
 	rgbcx::bc1_approx_mode bc1_approx = rgbcx::bc1_approx_mode::cBC1Ideal;
 	container_enum container = CONTAINER_ERROR;
+
+	res_opts.channels = 4;
+	res_opts.alpha_channel = 3;
 
 	assert(array_size(format_list) == (size_t)FORMAT_COUNT);
 
@@ -448,6 +454,14 @@ int main(int argc, char **argv)
 				res_height = atoi(argv[++argi]);
 			} else if (!strcmp(arg, "-i") || !strcmp(arg, "--input")) {
 				input_file = argv[++argi];
+			} else if (!strcmp(arg, "--input-r")) {
+				input_channel_file[0] = argv[++argi];
+			} else if (!strcmp(arg, "--input-g")) {
+				input_channel_file[1] = argv[++argi];
+			} else if (!strcmp(arg, "--input-b")) {
+				input_channel_file[2] = argv[++argi];
+			} else if (!strcmp(arg, "--input-a")) {
+				input_channel_file[3] = argv[++argi];
 			} else if (!strcmp(arg, "-o") || !strcmp(arg, "--output")) {
 				output_file = argv[++argi];
 			} else if (!strcmp(arg, "-f") || !strcmp(arg, "--format")) {
@@ -496,6 +510,7 @@ int main(int argc, char **argv)
 			"    -j / --threads <num>: Number of threads to use\n"
 			"    -v / --verbose: Verbose output\n"
 			"    -l / --level <level>: Compression level 1-20 (default 10)\n"
+			"    --input-(rgba) <path>: Set/override input channels from single channel files\n"
 			"    --max-extent <extent>: Clamp the resolution of the image in pixels\n"
 			"                  Maintains aspect ratio.\n"
 			"    --resolution <width> <height>: Force output resolution to a specific size\n"
@@ -537,7 +552,13 @@ int main(int argc, char **argv)
 
 	// -- Validate arguments
 
-	if (!input_file) failf("Input file required: -i <input>");
+	bool has_input = input_file != NULL;
+	if (input_channel_file[0]) has_input = true;
+	if (input_channel_file[1]) has_input = true;
+	if (input_channel_file[2]) has_input = true;
+	if (input_channel_file[3]) has_input = true;
+
+	if (!has_input) failf("Input file required: -i <input> or --input-(rgba) <input-channel>");
 	if (!output_file) failf("Output file required: -o <output>");
 	if (format == FORMAT_ERROR) failf("Format required: -f <format> (see --help for available formats)");
 	if (max_extent == 0) failf("Maximum extent can't be zero, don't specify anything or use -1 to disable");
@@ -572,7 +593,7 @@ int main(int argc, char **argv)
 	}
 
 	if (verbose) {
-		printf("input_file: %s\n", input_file);
+		printf("input_file: %s\n", input_file ? input_file : "(per channel)");
 		printf("output_file: %s\n", output_file);
 		printf("format: %s\n", format_list[format].name);
 		printf("container: %s\n", container_list[container].name);
@@ -590,11 +611,36 @@ int main(int argc, char **argv)
 
 	// -- Load image data
 
-	int input_width, input_height;
-	uint8_t *pixels = (uint8_t*)stbi_load(input_file, &input_width, &input_height, NULL, 4);
-	if (!pixels) failf("Failed to load input file: %s", input_file);
-	if (verbose) {
-		printf("Loaded input file: %dx%d\n", input_width, input_height);
+	int input_width = 0, input_height = 0;
+	uint8_t *pixels = NULL;
+	
+	if (input_file) {
+		pixels = (uint8_t*)stbi_load(input_file, &input_width, &input_height, NULL, 4);
+		if (!pixels) failf("Failed to load input file: %s", input_file);
+		if (verbose) {
+			printf("Loaded input file: %dx%d\n", input_width, input_height);
+		}
+	}
+
+	const char *chan_names = "RGBA";
+	uint8_t *chan_pixels[4] = { NULL, NULL, NULL, NULL };
+	int chan_width[4] = { 0, 0, 0, 0 };
+	int chan_height[4] = { 0, 0, 0, 0 };
+	int max_chan_width = input_width, max_chan_height = input_height;
+	for (int i = 0; i < 4; i++) {
+		if (!input_channel_file[i]) continue;
+
+		chan_pixels[i] = (uint8_t*)stbi_load(input_channel_file[i], &chan_width[i], &chan_height[i], NULL, 1);
+		if (!chan_pixels[i]) {
+			failf("Failed to load input channel %c file: %s", chan_names[i], input_channel_file[i]);
+		}
+		if (verbose) {
+			printf("Loaded input channel %c file: %s (%dx%d)\n", chan_names[i], input_channel_file[i],
+				chan_width[i], chan_height[i]);
+		}
+
+		if (chan_width[i] > max_chan_width) max_chan_width = chan_width[i];
+		if (chan_height[i] > max_chan_height) max_chan_height = chan_height[i];
 	}
 
 	// -- Premultiply input data if necessary
@@ -605,6 +651,46 @@ int main(int argc, char **argv)
 		}
 
 		premultiply_alpha(pixels, input_width, input_height);
+	}
+
+	// -- Splice input channels
+
+	if (max_chan_width > input_width || max_chan_height > input_height) {
+		uint8_t *new_pixels = (uint8_t*)malloc((size_t)max_chan_width * (size_t)max_chan_height * 4);
+		if (!new_pixels) failf("Failed to allocate memory for channel merge resize");
+		if (pixels) {
+			image_resize(res_opts, new_pixels, max_chan_width, max_chan_height, pixels, input_width, input_height);
+		} else {
+			memset(new_pixels, 0, (size_t)max_chan_width * (size_t)max_chan_height * 4);
+		}
+		free(pixels);
+		pixels = new_pixels;
+		input_width = max_chan_width;
+		input_height = max_chan_height;
+	}
+
+	for (int i = 0; i < 4; i++) {
+		if (!chan_pixels[i]) continue;
+		uint8_t *chan = chan_pixels[i];
+
+		if (chan_width[i] < max_chan_height || chan_height[i] < max_chan_height) {
+			resize_opts chan_opts = res_opts;
+			chan_opts.alpha_channel = 0;
+			chan_opts.channels = 1;
+			chan_opts.linear = true;
+			chan_opts.flags = 0;
+			uint8_t *new_chan = (uint8_t*)malloc((size_t)input_width * (size_t)input_height);
+			if (!new_chan) failf("Failed to allocate memory for channel resize");
+			image_resize(chan_opts, new_chan, input_width, input_height, chan, chan_width[i], chan_height[i]);
+
+			free(chan);
+			chan = new_chan;
+		}
+
+		insert_channel(pixels, chan, i, input_width, input_height);
+
+		free(chan);
+		chan_pixels[i] = NULL;
 	}
 
 	// -- Resize input data
