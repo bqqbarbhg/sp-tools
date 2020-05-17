@@ -62,7 +62,7 @@ bool astcenc_encode_image(const astcenc_opts *opts, uint8_t *dst, const uint8_t 
 	ewp.rgba_weights[3] = 1.0f;
 	ewp.ra_normal_angular_scale = 0;
 
-	if (opts->rgba_weights[0] != 0.0f || opts->rgba_weights[1] != 0.0f || opts->rgba_weights[2] == 0.0f || opts->rgba_weights[3] != 0.0f) {
+	if (opts->rgba_weights[0] != 0.0f || opts->rgba_weights[1] != 0.0f || opts->rgba_weights[2] != 0.0f || opts->rgba_weights[3] != 0.0f) {
 		ewp.rgba_weights[0] = opts->rgba_weights[0];
 		ewp.rgba_weights[1] = opts->rgba_weights[1];
 		ewp.rgba_weights[2] = opts->rgba_weights[2];
