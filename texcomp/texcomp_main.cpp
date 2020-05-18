@@ -51,7 +51,7 @@ typedef enum format_enum {
 } format_enum;
 
 typedef struct pixel_format {
-	char magic[4];
+	const char *magic;
 	format_enum format;
 	int block_width;
 	int block_height;
@@ -61,14 +61,14 @@ typedef struct pixel_format {
 } pixel_format;
 
 const pixel_format format_list[] = {
-	{ { 'r','a','8',' ' }, FORMAT_RGBA8, 1,1,4, "rgba8", "Uncompressed 8-bits per channel" },
-	{ { 'b','c','1',' ' }, FORMAT_BC1, 4,4,8, "bc1", "RGB Direct3D Block Compression" },
-	{ { 'b','c','3',' ' }, FORMAT_BC3, 4,4,16, "bc3", "RGB+A Direct3D Block Compression" },
-	{ { 'b','c','4',' ' }, FORMAT_BC4, 4,4,8, "bc4", "LDR R Direct3D Block Compression" },
-	{ { 'b','c','5',' ' }, FORMAT_BC5, 4,4,16, "bc5", "R+G Direct3D Block Compression" },
-	{ { 'b','c','7',' ' }, FORMAT_BC7, 4,4,16, "bc7", "RGB(+A) Direct3D Block Compression" },
-	{ { 'a','s','4','4' }, FORMAT_ASTC_4X4, 4,4,16, "astc4x4", "RGB(+A) ASTC Compression (4x4 blocks)" },
-	{ { 'a','s','8','8' }, FORMAT_ASTC_8X8, 8,8,16, "astc8x8", "RGB(+A) ASTC Compression (8x8 blocks)" },
+	{ "rga8", FORMAT_RGBA8, 1,1,4, "rgba8", "Uncompressed 8-bits per channel" },
+	{ "bc1 ", FORMAT_BC1, 4,4,8, "bc1", "RGB Direct3D Block Compression" },
+	{ "bc3 ", FORMAT_BC3, 4,4,16, "bc3", "RGB+A Direct3D Block Compression" },
+	{ "bc4 ", FORMAT_BC4, 4,4,8, "bc4", "LDR R Direct3D Block Compression" },
+	{ "bc5 ", FORMAT_BC5, 4,4,16, "bc5", "R+G Direct3D Block Compression" },
+	{ "bc7 ", FORMAT_BC7, 4,4,16, "bc7", "RGB(+A) Direct3D Block Compression" },
+	{ "as44", FORMAT_ASTC_4X4, 4,4,16, "astc4x4", "RGB(+A) ASTC Compression (4x4 blocks)" },
+	{ "as88", FORMAT_ASTC_8X8, 8,8,16, "astc8x8", "RGB(+A) ASTC Compression (8x8 blocks)" },
 };
 
 typedef enum container_enum {
@@ -338,27 +338,6 @@ static void write_mips(FILE *f, const mip_data *mips, int num_mips)
 	}
 }
 
-typedef struct sptex_mip {
-	uint32_t width, height;
-	uint32_t compressed_data_offset;
-	uint32_t compressed_data_size;
-	uint32_t uncompressed_data_size;
-	sp_compression_type compression_type;
-} sptex_mip;
-
-typedef struct sptex_header {
-	char file_magic[4];
-	uint32_t file_version;
-	char fmt_magic[4];
-	uint32_t file_size;
-	uint32_t width, height;
-	uint32_t uncropped_width, uncropped_height;
-	uint32_t crop_min_x, crop_min_y;
-	uint32_t crop_max_x, crop_max_y;
-	uint32_t num_mips;
-	sptex_mip mips[16];
-} sptex_header;
-
 typedef struct dds_header {
 	char magic[4];
 	uint32_t size;
@@ -446,6 +425,7 @@ int main(int argc, char **argv)
 			output_ignores_alpha = true;
 		} else if (!strcmp(arg, "--normal-map")) {
 			normal_map = true;
+			res_opts.linear = true;
 		} else if (!strcmp(arg, "--decorrelate-remap")) {
 			decorrelate_remap = true;
 		} else if (left >= 1) {
