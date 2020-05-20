@@ -189,19 +189,25 @@ struct merge_key
 {
 	ufbx_material *material;
 	vertex_format format;
+
+	bool operator==(const merge_key &rhs) const {
+		return material == rhs.material && !memcmp(&format, &rhs.format, sizeof(format));
+	}
 };
+
+static uint32_t hash(const merge_key &key) { return rh::hash_buffer_align4(&key, sizeof(key)); }
 
 template <typename T>
 struct buffer_hash
 {
 };
 
-mesh_data_format create_mesh_data_format(const mesh_opts &opts)
+mesh_data_format create_mesh_data_format(const vertex_format &format)
 {
 	mesh_data_format fmt = { };
 
-	for (uint32_t i = 0; i < opts.format.num_attribs; i++) {
-		const spmdl_attrib &attrib = opts.format.attribs[i];
+	for (uint32_t i = 0; i < format.num_attribs; i++) {
+		const spmdl_attrib &attrib = format.attribs[i];
 
 		uint32_t attrib_size_in_floats = 0;
 		switch (attrib.attrib) {
@@ -353,7 +359,7 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 	return part;
 }
 
-void merge_mesh_part(mesh_part &dst, const mesh_part src)
+void merge_mesh_part(mesh_part &dst, const mesh_part &src)
 {
 	rh::array<uint32_t> bone_remap;
 
@@ -389,28 +395,30 @@ void merge_mesh_part(mesh_part &dst, const mesh_part src)
 
 	// Remap bone indices
 
-	float *src_vertex_begin = dst.vertex_data.data() + dst.data_format.vertex_size_in_floats * dst.num_vertices;
-	uint32_t attrib_offset_in_floats = 0;
-	for (uint32_t i = 0; i < dst.format.num_attribs; i++) {
-		const spmdl_attrib &attrib = dst.format.attribs[i];
+	if (!src.bones.empty()) {
+		float *src_vertex_begin = dst.vertex_data.data() + dst.data_format.vertex_size_in_floats * dst.num_vertices;
+		uint32_t attrib_offset_in_floats = 0;
+		for (uint32_t i = 0; i < dst.format.num_attribs; i++) {
+			const spmdl_attrib &attrib = dst.format.attribs[i];
 
-		size_t stride_in_floats = dst.data_format.vertex_size_in_floats;
-		float *dst_data = dst.vertex_data.data() + attrib_offset_in_floats;
-		switch (attrib.attrib) {
+			size_t stride_in_floats = dst.data_format.vertex_size_in_floats;
+			float *dst_data = dst.vertex_data.data() + attrib_offset_in_floats;
+			switch (attrib.attrib) {
 
-		case SP_VERTEX_ATTRIB_BONE_INDEX:
-			{
-				for (size_t vi = 0; vi < src.num_vertices; vi++) {
-					for (size_t j = 0; j < dst.data_format.weights_per_vertex; j++) {
-						dst_data[j] = (float)bone_remap[(int32_t)dst_data[j]];
+			case SP_VERTEX_ATTRIB_BONE_INDEX:
+				{
+					for (size_t vi = 0; vi < src.num_vertices; vi++) {
+						for (size_t j = 0; j < dst.data_format.weights_per_vertex; j++) {
+							dst_data[j] = (float)bone_remap[(int32_t)dst_data[j]];
+						}
 					}
 				}
+				break;
+
 			}
-			break;
 
+			attrib_offset_in_floats += (uint32_t)dst.data_format.attrib_size_in_floats[i];
 		}
-
-		attrib_offset_in_floats += (uint32_t)dst.data_format.attrib_size_in_floats[i];
 	}
 
 	dst.num_vertices += src.num_vertices;
@@ -701,6 +709,10 @@ rh::array<mesh_part> process_mesh(ufbx_mesh *mesh, const mesh_data_format &fmt, 
 	return parts;
 }
 
+void optimize_mesh_part(mesh_part &part)
+{
+}
+
 int main(int argc, char **argv)
 {
 	const char *input_file = NULL;
@@ -710,6 +722,8 @@ int main(int argc, char **argv)
 	int level = 10;
 	int num_threads = 1;
 	vertex_format mesh_format;
+	bool combine_meshes = false;
+	bool combine_everything = false;
 
 	// -- Parse arguments
 
@@ -721,8 +735,11 @@ int main(int argc, char **argv)
 			verbose = true;
 		} else if (!strcmp(arg, "--help")) {
 			show_help = true;
-		} else if (!strcmp(arg, "--combine-meshes")) {
-			// mp_opts.combine_meshes = true;
+		} else if (!strcmp(arg, "--combine-materials")) {
+			combine_meshes = true;
+		} else if (!strcmp(arg, "--combine-everything")) {
+			combine_meshes = true;
+			combine_everything = true;
 		} else if (left >= 1) {
 			if (!strcmp(arg, "-i") || !strcmp(arg, "--input")) {
 				input_file = argv[++argi];
@@ -775,20 +792,49 @@ int main(int argc, char **argv)
 
 	mesh_opts opts;
 	opts.format = mesh_format;
-	mesh_data_format fmt = create_mesh_data_format(opts);
+	mesh_data_format fmt = create_mesh_data_format(opts.format);
 
 	mesh_limits limits;
 	limits.max_bones = 32;
-	limits.max_vertices = 1024;
+	limits.max_vertices = 256;
 
 	rh::array<mesh_part> parts;
 
 	for (ufbx_mesh &mesh : scene->meshes) {
-		for (mesh_part &part : process_mesh(&mesh, fmt, opts)) {
-			for (mesh_part &split_part : split_mesh(std::move(part), limits)) {
-				parts.push_back(std::move(split_part));
+		parts.insert_back(process_mesh(&mesh, fmt, opts));
+	}
+
+	if (combine_meshes) {
+		rh::hash_map<merge_key, mesh_part> combined_parts;
+
+		for (mesh_part &part : parts) {
+			merge_key key;
+			key.material = combine_everything ? nullptr : part.material;
+			key.format = part.format;
+
+			mesh_part &combined = combined_parts[key];
+			if (combined.mesh == nullptr) {
+				combined = std::move(part);
+			} else {
+				merge_mesh_part(combined, part);
 			}
 		}
+
+		parts.clear();
+		for (auto &pair : combined_parts) {
+			parts.push_back(std::move(pair.value));
+		}
+	}
+
+	{
+		rh::array<mesh_part> split_parts;
+		split_parts.reserve(parts.size());
+
+		for (mesh_part &part : parts) {
+			split_parts.insert_back(split_mesh(std::move(part), limits));
+		}
+
+		parts = std::move(split_parts);
 	}
 
 	return 0;

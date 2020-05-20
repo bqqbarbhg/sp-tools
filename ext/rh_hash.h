@@ -120,6 +120,16 @@ inline bool template_equal_range(const void *a, const void *b, size_t count) {
 	return false;
 }
 
+template <typename T, typename std::enable_if<imp::has_equal<T>::value, int>::type = 0>
+inline bool safe_equals(const T &lhs, const T &rhs) {
+	return lhs == rhs;
+}
+
+template <typename T, typename std::enable_if<!imp::has_equal<T>::value, int>::type = 0>
+inline bool safe_equals(const T &lhs, const T &rhs) {
+	return false;
+}
+
 template <typename T>
 type_info type_info_for<T>::info = {
 	sizeof(T),
@@ -274,6 +284,17 @@ struct array : array_base
 		imp_size += size;
 	}
 
+	void insert_back(const array<T> &data) {
+		insert_back((T*)data.values, data.imp_size);
+	}
+
+	void insert_back(array<T> &&data) {
+		if (imp_size + data.imp_size > imp_capacity) reserve(imp_size + data.imp_size);
+		type.move_range((T*)values + imp_size, (T*)data.values, data.imp_size, sizeof(T));
+		imp_size += data.imp_size;
+		data.imp_size = 0;
+	}
+
 };
 
 struct hash_base
@@ -319,10 +340,11 @@ protected:
 
 template <typename K, typename V>
 struct kv_pair {
+
 	K key;
 	V value;
 
-	bool operator==(const kv_pair &rhs) const { return key == rhs.key && value == rhs.value; }
+	bool operator==(const kv_pair &rhs) const { return safe_equals(key, rhs.key) && safe_equals(value, rhs.value); }
 	bool operator!=(const kv_pair &rhs) const { return !(*this == rhs); }
 };
 
