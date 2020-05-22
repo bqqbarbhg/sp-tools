@@ -106,6 +106,7 @@ typedef enum sp_format_flags {
 	SP_FORMAT_FLAG_COMPRESSED = 0x20,
 	SP_FORMAT_FLAG_DEPTH = 0x40,
 	SP_FORMAT_FLAG_STENCIL = 0x80,
+	SP_FORMAT_FLAG_BASIC = 0x100,
 } sp_format_flags;
 
 typedef struct sp_format_info {

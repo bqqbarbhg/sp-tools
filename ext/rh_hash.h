@@ -52,6 +52,18 @@ struct buffer_hash {
 	}
 };
 
+template <typename T>
+struct slice {
+	T *data;
+	size_t size;
+
+	slice() : data(nullptr), size(0) { }
+	slice(T *data, size_t size) : data(data), size(size) { }
+
+	T *begin() const { return data; }
+	T *end() const { return data + size; }
+};
+
 struct allocator {
 	void *user;
 	void *(*allocate)(void *user, size_t size) = 0;
@@ -266,22 +278,22 @@ struct array : array_base
 		} else if (new_size < imp_size) {
 			type.destruct_range((T*)values + imp_size, imp_size - new_size);
 		}
-		imp_size = new_size;
+		imp_size = (uint32_t)new_size;
 	}
 
-	void resize_uninit(size_t new_size, T value={}) {
+	void resize_uninit(size_t new_size) {
 		if (new_size > imp_size) {
 			reserve(new_size);
 		} else if (new_size < imp_size) {
 			type.destruct_range((T*)values + imp_size, imp_size - new_size);
 		}
-		imp_size = new_size;
+		imp_size = (uint32_t)new_size;
 	}
 
 	void insert_back(const T *data, size_t size) {
 		if (imp_size + size > imp_capacity) reserve(imp_size + size);
 		type.copy_range((T*)values + imp_size, data, size, sizeof(T));
-		imp_size += size;
+		imp_size += (uint32_t)size;
 	}
 
 	void insert_back(const array<T> &data) {
@@ -295,6 +307,12 @@ struct array : array_base
 		data.imp_size = 0;
 	}
 
+	void insert_back(slice<const T> &data) {
+		insert_back(data.data, data.size);
+	}
+
+	operator slice<T>() { return slice<T>((T*)values, imp_size); }
+	operator slice<const T>() const { return slice<const T>((const T*)values, imp_size); }
 };
 
 struct hash_base

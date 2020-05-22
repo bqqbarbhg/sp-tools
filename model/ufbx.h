@@ -542,6 +542,7 @@ void ufbx_matrix_mul(ufbx_matrix *dst, const ufbx_matrix *l, const ufbx_matrix *
 ufbx_vec3 ufbx_transform_position(const ufbx_matrix *m, ufbx_vec3 v);
 ufbx_vec3 ufbx_transform_direction(const ufbx_matrix *m, ufbx_vec3 v);
 ufbx_matrix ufbx_get_normal_matrix(const ufbx_matrix *m);
+ufbx_matrix ufbx_get_inverse_matrix(const ufbx_matrix *m);
 
 ufbx_real ufbx_evaluate_curve(const ufbx_anim_curve *curve, double time);
 

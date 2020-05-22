@@ -7702,6 +7702,36 @@ ufbx_matrix ufbx_get_normal_matrix(const ufbx_matrix *m)
 	return r;
 }
 
+ufbx_matrix ufbx_get_inverse_matrix(const ufbx_matrix *m)
+{
+	ufbx_real det = 
+		- m->m02*m->m11*m->m20 + m->m01*m->m12*m->m20 + m->m02*m->m10*m->m21
+		- m->m00*m->m12*m->m21 - m->m01*m->m10*m->m22 + m->m00*m->m11*m->m22;
+
+	ufbx_matrix r;
+	if (det == 0.0) {
+		memset(&r, 0, sizeof(r));
+		return r;
+	}
+
+	ufbx_real rcp_det = 1.0 / det;
+
+	r.m00 = ( - m->m12*m->m21 + m->m11*m->m22) * rcp_det;
+	r.m10 = ( + m->m12*m->m20 - m->m10*m->m22) * rcp_det;
+	r.m20 = ( - m->m11*m->m20 + m->m10*m->m21) * rcp_det;
+	r.m01 = ( + m->m02*m->m21 - m->m01*m->m22) * rcp_det;
+	r.m11 = ( - m->m02*m->m20 + m->m00*m->m22) * rcp_det;
+	r.m21 = ( + m->m01*m->m20 - m->m00*m->m21) * rcp_det;
+	r.m02 = ( - m->m02*m->m11 + m->m01*m->m12) * rcp_det;
+	r.m12 = ( + m->m02*m->m10 - m->m00*m->m12) * rcp_det;
+	r.m22 = ( - m->m01*m->m10 + m->m00*m->m11) * rcp_det;
+	r.m03 = (m->m03*m->m12*m->m21 - m->m02*m->m13*m->m21 - m->m03*m->m11*m->m22 + m->m01*m->m13*m->m22 + m->m02*m->m11*m->m23 - m->m01*m->m12*m->m23) * rcp_det;
+	r.m13 = (m->m02*m->m13*m->m20 - m->m03*m->m12*m->m20 + m->m03*m->m10*m->m22 - m->m00*m->m13*m->m22 - m->m02*m->m10*m->m23 + m->m00*m->m12*m->m23) * rcp_det;
+	r.m23 = (m->m03*m->m11*m->m20 - m->m01*m->m13*m->m20 - m->m03*m->m10*m->m21 + m->m00*m->m13*m->m21 + m->m01*m->m10*m->m23 - m->m00*m->m11*m->m23) * rcp_det;
+
+	return r;
+}
+
 ufbx_real ufbx_evaluate_curve(const ufbx_anim_curve *curve, double time)
 {
 	if (curve->keyframes.size <= 1) {
