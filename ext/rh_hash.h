@@ -62,6 +62,8 @@ struct slice {
 
 	T *begin() const { return data; }
 	T *end() const { return data + size; }
+
+	operator slice<const T>() { return slice<const T>(data, size); }
 };
 
 struct allocator {
@@ -223,6 +225,8 @@ struct array : array_base
 	RHMAP_FORCEINLINE const_iterator cend() const noexcept { return ((value_type*)values) + imp_size; }
 	RHMAP_FORCEINLINE value_type *data() noexcept { return (value_type*)values; }
 	RHMAP_FORCEINLINE const value_type *data() const noexcept { return (value_type*)values; }
+	RHMAP_FORCEINLINE rh::slice<T> slice() noexcept { return rh::slice<T>((T*)values, imp_size); }
+	RHMAP_FORCEINLINE rh::slice<const T> slice() const noexcept { return rh::slice<const T>((T*)values, imp_size); }
 
 	void push_back(const T &t) {
 		if (imp_size == imp_capacity) imp_grow(0);
@@ -317,12 +321,9 @@ struct array : array_base
 		data.imp_size = 0;
 	}
 
-	void insert_back(slice<const T> &data) {
+	void insert_back(rh::slice<const T> &data) {
 		insert_back(data.data, data.size);
 	}
-
-	operator slice<T>() { return slice<T>((T*)values, imp_size); }
-	operator slice<const T>() const { return slice<const T>((const T*)values, imp_size); }
 };
 
 struct hash_base

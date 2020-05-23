@@ -53,6 +53,8 @@ typedef enum format_enum {
 typedef struct pixel_format {
 	const char *magic;
 	format_enum format;
+	sp_format sp_linear;
+	sp_format sp_srgb;
 	int block_width;
 	int block_height;
 	int block_size;
@@ -61,14 +63,14 @@ typedef struct pixel_format {
 } pixel_format;
 
 const pixel_format format_list[] = {
-	{ "rga8", FORMAT_RGBA8, 1,1,4, "rgba8", "Uncompressed 8-bits per channel" },
-	{ "bc1 ", FORMAT_BC1, 4,4,8, "bc1", "RGB Direct3D Block Compression" },
-	{ "bc3 ", FORMAT_BC3, 4,4,16, "bc3", "RGB+A Direct3D Block Compression" },
-	{ "bc4 ", FORMAT_BC4, 4,4,8, "bc4", "LDR R Direct3D Block Compression" },
-	{ "bc5 ", FORMAT_BC5, 4,4,16, "bc5", "R+G Direct3D Block Compression" },
-	{ "bc7 ", FORMAT_BC7, 4,4,16, "bc7", "RGB(+A) Direct3D Block Compression" },
-	{ "as44", FORMAT_ASTC_4X4, 4,4,16, "astc4x4", "RGB(+A) ASTC Compression (4x4 blocks)" },
-	{ "as88", FORMAT_ASTC_8X8, 8,8,16, "astc8x8", "RGB(+A) ASTC Compression (8x8 blocks)" },
+	{ "rga8", FORMAT_RGBA8, SP_FORMAT_RGBA8_UNORM, SP_FORMAT_RGBA8_SRGB, 1,1,4, "rgba8", "Uncompressed 8-bits per channel" },
+	{ "bc1 ", FORMAT_BC1, SP_FORMAT_BC1_UNORM, SP_FORMAT_BC1_SRGB, 4,4,8, "bc1", "RGB Direct3D Block Compression" },
+	{ "bc3 ", FORMAT_BC3, SP_FORMAT_BC3_UNORM, SP_FORMAT_BC3_SRGB, 4,4,16, "bc3", "RGB+A Direct3D Block Compression" },
+	{ "bc4 ", FORMAT_BC4, SP_FORMAT_BC4_UNORM, SP_FORMAT_BC4_UNORM, 4,4,8, "bc4", "LDR R Direct3D Block Compression" },
+	{ "bc5 ", FORMAT_BC5, SP_FORMAT_BC5_UNORM, SP_FORMAT_BC5_UNORM, 4,4,16, "bc5", "R+G Direct3D Block Compression" },
+	{ "bc7 ", FORMAT_BC7, SP_FORMAT_BC7_UNORM, SP_FORMAT_BC7_SRGB, 4,4,16, "bc7", "RGB(+A) Direct3D Block Compression" },
+	{ "as44", FORMAT_ASTC_4X4, SP_FORMAT_ASTC4X4_UNORM, SP_FORMAT_ASTC4X4_SRGB, 4,4,16, "astc4x4", "RGB(+A) ASTC Compression (4x4 blocks)" },
+	{ "as88", FORMAT_ASTC_8X8, SP_FORMAT_ASTC8X8_UNORM, SP_FORMAT_ASTC8X8_SRGB, 8,8,16, "astc8x8", "RGB(+A) ASTC Compression (8x8 blocks)" },
 };
 
 typedef enum container_enum {
@@ -958,64 +960,68 @@ int main(int argc, char **argv)
 		char *compress_buf = (char*)malloc(bound);
 		if (!compress_buf) failf("Failed to allocate lossless compression buffer");
 
+		sptex_header header;
+		header.header.magic = SPFILE_HEADER_SPTEX;
+		header.header.version = 1;
+		header.header.header_info_size = sizeof(sptex_info);
+		header.header.num_sections = num_mips;
+		header.info.format = res_opts.linear ? fmt.sp_linear : fmt.sp_srgb;
+		header.info.width = (uint16_t)input_width;
+		header.info.height = (uint16_t)input_height;
+		header.info.uncropped_width = (uint16_t)uncropped_width;
+		header.info.uncropped_height = (uint16_t)uncropped_height;
+		header.info.crop_min_x = (uint16_t)input_rect.min_x;
+		header.info.crop_min_y = (uint16_t)input_rect.min_y;
+		header.info.crop_max_x = (uint16_t)input_rect.max_x;
+		header.info.crop_max_y = (uint16_t)input_rect.max_y;
+		header.info.num_mips = num_mips;
+
+		uint32_t header_size = sizeof(spfile_header) + sizeof(sptex_info) + sizeof(spfile_section) * num_mips;
 		size_t compress_offset = 0;
 
-		sptex_header header;
-		memcpy(header.file_magic, "sptx", 4);
-		header.file_version = 1;
-		header.file_size = (uint32_t)(sizeof(sptex_header) + mip_data_offset);
-		memcpy(header.fmt_magic, fmt.magic, 4);
-		header.width = (uint32_t)input_width;
-		header.height = (uint32_t)input_height;
-		header.uncropped_width = (uint32_t)uncropped_width;
-		header.uncropped_height = (uint32_t)uncropped_height;
-		header.crop_min_x = (uint32_t)input_rect.min_x;
-		header.crop_min_y = (uint32_t)input_rect.min_y;
-		header.crop_max_x = (uint32_t)input_rect.max_x;
-		header.crop_max_y = (uint32_t)input_rect.max_y;
-		header.num_mips = num_mips;
-		for (int i = 0; i < 16; i++) {
-			sptex_mip *mip = &header.mips[i];
-			if (i < num_mips) {
-				size_t compressed_size = sp_compress_buffer(compression_type,
-					compress_buf + compress_offset, bound - compress_offset,
-					mips[i].data, mips[i].data_size, level);
+		for (int i = 0; i < num_mips; i++) {
+			spfile_section *s_mip = &header.s_mips[i];
+			size_t compressed_size = sp_compress_buffer(compression_type,
+				compress_buf + compress_offset, bound - compress_offset,
+				mips[i].data, mips[i].data_size, level);
 
-				double no_compress_ratio = 1.05;
-				sp_compression_type mip_type = compression_type;
-				if ((double)mips[i].data_size / (double)compressed_size < no_compress_ratio) {
-					mip_type = SP_COMPRESSION_NONE;
-					memcpy(compress_buf + compress_offset, mips[i].data, mips[i].data_size);
-					compressed_size = mips[i].data_size;
-				}
-
-				if (verbose) {
-					if (mips[i].data_size > 1000) {
-						printf("Compressed mip %u from %.1fkB to %.1fkB, ratio %.2f\n",
-							i, (double)mips[i].data_size / 1000.0, (double)compressed_size / 1000.0,
-							(double)mips[i].data_size / (double)compressed_size);
-					} else {
-						printf("Compressed mip %d from %zub to %zub, ratio %.2f\n",
-							i, mips[i].data_size, compressed_size,
-							(double)mips[i].data_size / (double)compressed_size);
-					}
-				}
-
-				mip->width = mips[i].width;
-				mip->height = mips[i].height;
-				mip->compressed_data_size = (uint32_t)compressed_size;
-				mip->compressed_data_offset = (uint32_t)compress_offset;
-				mip->uncompressed_data_size = (uint32_t)mips[i].data_size;
-				mip->compression_type = compression_type;
-
-				compress_offset += compressed_size;
-			} else {
-				memset(mip, 0, sizeof(sptex_mip));
+			double no_compress_ratio = 1.05;
+			sp_compression_type mip_type = compression_type;
+			if ((double)mips[i].data_size / (double)compressed_size < no_compress_ratio) {
+				mip_type = SP_COMPRESSION_NONE;
+				memcpy(compress_buf + compress_offset, mips[i].data, mips[i].data_size);
+				compressed_size = mips[i].data_size;
 			}
+
+			if (verbose) {
+				if (mips[i].data_size > 1000) {
+					printf("Compressed mip %u from %.1fkB to %.1fkB, ratio %.2f\n",
+						i, (double)mips[i].data_size / 1000.0, (double)compressed_size / 1000.0,
+						(double)mips[i].data_size / (double)compressed_size);
+				} else {
+					printf("Compressed mip %d from %zub to %zub, ratio %.2f\n",
+						i, mips[i].data_size, compressed_size,
+						(double)mips[i].data_size / (double)compressed_size);
+				}
+			}
+
+			s_mip->magic = SPFILE_SECTION_MIP;
+			s_mip->index = i;
+			s_mip->compression_type = mip_type;
+			s_mip->uncompressed_size = (uint32_t)mips[i].data_size;
+			s_mip->compressed_size = (uint32_t)compressed_size;
+			s_mip->offset = (uint32_t)compress_offset + header_size;
+
+			compress_offset += compressed_size;
 		}
 
-		write_data(f, &header, sizeof(header));
+		write_data(f, &header, header_size);
 		write_data(f, compress_buf, compress_offset);
+
+		if (compress_offset + header_size < sizeof(sptex_header)) {
+			char zero_buf[sizeof(sptex_header)] = { };
+			write_data(f, zero_buf, sizeof(sptex_header) - (compress_offset + header_size));
+		}
 
 		free(compress_buf);
 

@@ -15,14 +15,6 @@ typedef enum {
 	SP_COMPRESSION_FORCE_U32 = 0x7fffffff,
 } sp_compression_type;
 
-typedef enum sp_magic {
-	SP_MAGIC_SPTEX  = 0x78747073, // 'sptx'
-	SP_MAGIC_SPMDL  = 0x646d7073, // 'spmd'
-	SP_MAGIC_SPANIM = 0x6e617073, // 'span'
-
-	SP_MAGIC_FORCE_U32 = 0x7fffffff,
-} sp_magic;
-
 typedef enum sp_format {
 
 	SP_FORMAT_UNKNOWN,
@@ -128,26 +120,68 @@ size_t sp_get_compression_bound(sp_compression_type type, size_t src_size);
 size_t sp_compress_buffer(sp_compression_type type, void *dst, size_t dst_size, const void *src, size_t src_size, int level);
 size_t sp_decompress_buffer(sp_compression_type type, void *dst, size_t dst_size, const void *src, size_t src_size);
 
-typedef struct sptex_mip {
-	uint32_t width, height;
-	uint32_t compressed_data_offset;
-	uint32_t compressed_data_size;
-	uint32_t uncompressed_data_size;
-	sp_compression_type compression_type;
-} sptex_mip;
+typedef enum spfile_header_magic {
+	SPFILE_HEADER_SPTEX  = 0x78747073, // 'sptx'
+	SPFILE_HEADER_SPMDL  = 0x646d7073, // 'spmd'
+	SPFILE_HEADER_SPANIM = 0x6e617073, // 'span'
 
-typedef struct sptex_header {
-	sp_magic magic; // = SP_MAGIC_SPTEX
-	uint32_t file_version;
-	sp_format format;
-	uint32_t file_size;
-	uint32_t width, height;
-	uint32_t uncropped_width, uncropped_height;
-	uint32_t crop_min_x, crop_min_y;
-	uint32_t crop_max_x, crop_max_y;
-	uint32_t num_mips;
-	sptex_mip mips[16];
-} sptex_header;
+	SPFILE_HEADER_FORCE_U32 = 0x7fffffff,
+} spfile_header_magic;
+
+typedef enum spfile_section_magic {
+	SPFILE_SECTION_STRINGS   = 0x73727473, // 'strs'
+	SPFILE_SECTION_BONES     = 0x656e6f62, // 'bone'
+	SPFILE_SECTION_NODES     = 0x65646f6e, // 'node'
+	SPFILE_SECTION_MESHES    = 0x6873656d, // 'mesh'
+	SPFILE_SECTION_GEOMETRY  = 0x6d6f6567, // 'geom'
+	SPFILE_SECTION_MIP       = 0x2070696d, // 'mip '
+	SPFILE_SECTION_ANIMATION = 0x6d696e61, // 'anim'
+
+	SPFILE_SECTION_FORCE_U32 = 0x7fffffff,
+} spfile_section_magic;
+
+typedef struct spfile_section
+{
+	spfile_section_magic magic;
+	sp_compression_type compression_type;
+	uint32_t index;
+	uint32_t offset;
+	uint32_t uncompressed_size;
+	uint32_t compressed_size;
+} spfile_section;
+
+typedef struct spfile_header
+{
+	spfile_header_magic magic;
+	uint32_t version;
+	uint32_t header_info_size;
+	uint32_t num_sections;
+} spfile_header;
+
+typedef struct spfile_string
+{
+	uint32_t offset;
+	uint32_t length;
+} spfile_string;
+
+typedef struct spanim_bone
+{
+	uint32_t parent;
+	spfile_string name;
+} spanim_bone;
+
+typedef struct spanim_info {
+	double duration;
+	uint32_t num_bones;
+} spanim_info;
+
+typedef struct spanim_header {
+	spfile_header header;
+	spanim_info info;
+	spfile_section s_bones;     // spanim_bone[info.num_bones]
+	spfile_section s_strings;   // char[uncompressed_size]
+	spfile_section s_animation; // char[uncompressed_size]
+} spanim_header;
 
 #define SPMDL_MAX_VERTEX_BUFFERS 4
 #define SPMDL_MAX_VERTEX_ATTRIBS 16
@@ -167,28 +201,10 @@ typedef struct spmdl_matrix
 	spmdl_vec3 columns[4];
 } spmdl_matrix;
 
-typedef struct spmdl_string
-{
-	uint32_t offset;
-	uint32_t length;
-} spmdl_string;
-
-typedef struct spmdl_header
-{
-	sp_magic magic; // = SP_MAGIC_SPMDL
-	uint32_t version;
-	uint32_t num_nodes;
-	uint32_t num_meshes;
-	uint32_t num_bones;
-	uint32_t num_materials;
-	uint32_t string_data_size;
-	uint32_t geometry_data_size;
-} spmdl_header;
-
 typedef struct spmdl_node
 {
 	uint32_t parent;
-	spmdl_string name;
+	spfile_string name;
 	spmdl_vec3 translation;
 	spmdl_vec4 rotation;
 	spmdl_vec3 scale;
@@ -200,18 +216,12 @@ typedef struct spmdl_bone
 {
 	uint32_t node;
 	spmdl_matrix mesh_to_bone;
-	uint32_t bone_offset;
-	uint32_t num_bones;
 } spmdl_bone;
 
 typedef struct spmdl_buffer
 {
-	sp_compression_type compression;
-	uint32_t flags;
-	uint32_t data_offset;
-	uint32_t compressed_size;
-	uint32_t encoded_size;
-	uint32_t uncompressed_size;
+	uint32_t offset;
+	uint32_t size;
 	uint32_t stride;
 } spmdl_buffer;
 
@@ -225,7 +235,7 @@ typedef struct spmdl_attrib
 
 typedef struct spmdl_material
 {
-	spmdl_string name;
+	spfile_string name;
 } spmdl_material;
 
 typedef struct spmdl_mesh
@@ -235,20 +245,52 @@ typedef struct spmdl_mesh
 	uint32_t num_indices;
 	uint32_t num_vertices;
 	uint32_t num_vertex_buffers;
-	uint32_t num_elements;
+	uint32_t num_attribs;
+	uint32_t bone_offset;
+	uint32_t num_bones;
 	spmdl_buffer vertex_buffers[SPMDL_MAX_VERTEX_BUFFERS];
 	spmdl_buffer index_buffer;
 	spmdl_attrib attribs[SPMDL_MAX_VERTEX_ATTRIBS];
 } spmdl_mesh;
 
-typedef struct spanim_header
-{
-	sp_magic magic; // = SP_MAGIC_SPANIM
-	uint32_t version;
+typedef struct spmdl_info {
 	uint32_t num_nodes;
-	uint32_t string_data_size;
-	uint32_t encoded_animation_size;
-} spanim_header;
+	uint32_t num_bones;
+	uint32_t num_meshes;
+} spmdl_info;
+
+typedef struct spmdl_header {
+	spfile_header header;
+	spmdl_info info;
+	spfile_section s_nodes;    // spmdl_node[info.num_nodes]
+	spfile_section s_bones;    // spmdl_bone[info.num_bones]
+	spfile_section s_meshes;   // spmdl_mesh[info.num_meshes]
+	spfile_section s_strings;  // char[uncompressed_size]
+	spfile_section s_geometry; // char[uncompressed_size]
+} spmdl_header;
+
+typedef struct sptex_mip {
+	uint32_t width, height;
+	uint32_t compressed_data_offset;
+	uint32_t compressed_data_size;
+	uint32_t uncompressed_data_size;
+	sp_compression_type compression_type;
+} sptex_mip;
+
+typedef struct sptex_info {
+	sp_format format;
+	uint16_t width, height;
+	uint16_t uncropped_width, uncropped_height;
+	uint16_t crop_min_x, crop_min_y;
+	uint16_t crop_max_x, crop_max_y;
+	uint32_t num_mips;
+} sptex_info;
+
+typedef struct sptex_header {
+	spfile_header header;
+	sptex_info info;
+	spfile_section s_mips[16];
+} sptex_header;
 
 #ifdef __cplusplus
 }

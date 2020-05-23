@@ -1158,6 +1158,13 @@ uint32_t add_node(model &model, ufbx_node *node)
 	return ix;
 }
 
+uint32_t find_node(const model &model, ufbx_node *node)
+{
+	auto it = model.node_mapping.find(node);
+	assert(it);
+	return it->value;
+}
+
 struct gltf_buffer_view
 {
 	uint32_t offset;
@@ -1337,7 +1344,7 @@ gltf_file convert_to_gltf(const model &mod, rh::slice<mesh_part> parts)
 
 			HackVertex *verts = (HackVertex*)buffer.data();
 
-			uint32_t buffer_view = gltf_push_buffer(gfile, buffer, part.format.stream_stride[si], 34962); // ARRAY_BUFFER
+			uint32_t buffer_view = gltf_push_buffer(gfile, buffer.slice(), part.format.stream_stride[si], 34962); // ARRAY_BUFFER
 
 			for (uint32_t ai = 0; ai < part.format.num_attribs; ai++) {
 				const spmdl_attrib &attrib = part.format.attribs[ai];
@@ -1484,6 +1491,18 @@ static void write_data(FILE *f, const void *data, size_t size)
 		fclose(f);
 		failf("Failed to write output data");
 	}
+}
+
+template <typename T>
+static void write_pod(FILE *f, T &t)
+{
+	write_data(f, &t, sizeof(T));
+}
+
+template <typename T>
+static void write_pod(FILE *f, rh::slice<T> slice)
+{
+	write_data(f, slice.data, sizeof(T) * slice.size);
 }
 
 struct glb_header
@@ -1714,7 +1733,29 @@ void write_gltf(FILE *f, const gltf_file &gfile)
 	jso_close(s);
 }
 
-acl::ANSIAllocator acl_ator;
+struct acl_zeroing_allocator final : acl::IAllocator
+{
+	acl_zeroing_allocator(acl::IAllocator &inner) : inner(inner) { }
+
+	acl::IAllocator &inner;
+
+	virtual void* allocate(size_t size, size_t alignment = k_default_alignment) override final
+	{
+		void *ptr = inner.allocate(size, alignment);
+		if (ptr) memset(ptr, 0, size + ((size_t)-(ptrdiff_t)size & (alignment - 1)));
+		return ptr;
+	}
+
+	virtual void deallocate(void* ptr, size_t size) override final
+	{
+		inner.deallocate(ptr, size);
+	}
+};
+
+// ACL streams seem to have some garbage in trailing data (!?!?!)
+// Zero buffers to make results reproducible
+acl::ANSIAllocator acl_ansi_ator;
+acl_zeroing_allocator acl_ator { acl_ansi_ator };
 
 struct animation_opts
 {
@@ -1786,6 +1827,123 @@ rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animatio
 	acl_ator.deallocate(compressed_clip, compressed_clip->get_size());
 
 	return result;
+}
+
+struct string_pool
+{
+	rhmap map;
+	rh::array<char> data;
+
+	string_pool()
+	{
+		rhmap_init_inline(&map);
+	}
+
+	~string_pool()
+	{
+		free(rhmap_reset_inline(&map));
+	}
+
+	string_pool(string_pool &&rhs) : map(rhs.map), data(std::move(rhs.data)) {
+		rhmap_init_inline(&rhs.map);
+	}
+	string_pool& operator=(string_pool &&rhs) {
+		std::swap(data, rhs.data);
+		std::swap(map, rhs.map);
+		return *this;
+	}
+
+	string_pool(const string_pool &rhs) = delete;
+	string_pool& operator=(const string_pool &rhs) = delete;
+
+	spfile_string insert(const char *str, size_t size)
+	{
+		if (map.size == map.capacity) {
+			size_t count, alloc_size;
+			rhmap_grow_inline(&map, &count, &alloc_size, 16, 0);
+			free(rhmap_rehash_inline(&map, count, alloc_size, malloc(alloc_size)));
+		}
+
+		uint32_t hash = rh::hash_buffer(str, size), scan, offset;
+		while (rhmap_find_inline(&map, hash, &scan, &offset)) {
+			if (!strcmp(data.data() + offset, str)) {
+				return { offset, (uint32_t)size };
+			}
+		}
+
+		offset = (uint32_t)data.size();
+		rhmap_insert_inline(&map, hash, scan, offset);
+		data.insert_back(str, size);
+		data.push_back('\0');
+		return { offset, (uint32_t)size };
+	}
+
+	spfile_string insert(const char *str) { return insert(str, strlen(str)); }
+	spfile_string insert(ufbx_string str) { return insert(str.data, str.length); }
+};
+
+spmdl_vec3 to_spmdl(ufbx_vec3 v) { return { (float)v.x, (float)v.y, (float)v.z }; }
+spmdl_vec4 to_spmdl(ufbx_vec4 v) { return { (float)v.x, (float)v.y, (float)v.z, (float)v.w }; }
+spmdl_matrix to_spmdl(const ufbx_matrix &v) {
+	return {
+		to_spmdl(v.cols[0]), to_spmdl(v.cols[1]), to_spmdl(v.cols[2]), to_spmdl(v.cols[3]),
+	};
+}
+
+struct compress_opts
+{
+	sp_compression_type type = SP_COMPRESSION_ZSTD;
+	int level = 10;
+	double uncompressed_threshold = 0.95;
+};
+
+struct compress_result
+{
+	rh::array<char> data;
+	sp_compression_type type;
+};
+
+compress_result compress(rh::slice<const char> data, const compress_opts &opts)
+{
+	compress_result result;
+	result.data.resize_uninit(sp_get_compression_bound(opts.type, data.size));
+	result.type = opts.type;
+
+	size_t compressed_size = sp_compress_buffer(opts.type, result.data.data(), result.data.size(), data.data, data.size, opts.level);
+	if (compressed_size >= (size_t)(data.size * opts.uncompressed_threshold)) {
+		if (opts.type != SP_COMPRESSION_NONE) {
+			result.data.resize_uninit(data.size);
+			memcpy(result.data.data(), data.data, data.size);
+		}
+	} else {
+		result.data.resize_uninit(compressed_size);
+	}
+
+	return result;
+}
+
+template <typename T>
+void init_section(uint32_t &offset, spfile_section &section, compress_result &res, rh::slice<T> data, const compress_opts &opts, spfile_section_magic magic, uint32_t index=0)
+{
+	res = compress(rh::slice<const char>((char*)data.data, data.size * sizeof(T)), opts);
+	section.magic = magic;
+	section.compression_type = res.type;
+	section.index = index;
+	section.offset = offset;
+	section.uncompressed_size = (uint32_t)data.size * sizeof(T);
+	section.compressed_size = (uint32_t)res.data.size();
+	offset += section.compressed_size;
+}
+
+template <typename T>
+spmdl_buffer sp_push_buffer(rh::array<char> &geometry, rh::slice<T> data, uint32_t stride=sizeof(T))
+{
+	spmdl_buffer buf;
+	buf.offset = (uint32_t)geometry.size();
+	buf.size = (uint32_t)data.size * sizeof(T);
+	buf.stride = stride;
+	geometry.insert_back((char*)data.data, data.size * sizeof(T));
+	return buf;
 }
 
 int main(int argc, char **argv)
@@ -1877,13 +2035,14 @@ int main(int argc, char **argv)
 	mesh_opts mesh_opts;
 	optimize_opts optimize_opts;
 	animation_opts anim_opts;
+	compress_opts compress_opts;
 
 	mesh_opts.format = mesh_format;
 	mesh_data_format fmt = create_mesh_data_format(mesh_opts.format);
 
 	mesh_limits limits;
 	limits.max_bones = 64;
-	limits.max_vertices = 65536;
+	limits.max_vertices = 0xffff;
 
 	model model;
 
@@ -1900,6 +2059,8 @@ int main(int argc, char **argv)
 			add_node(model, bone.node);
 		}
 	}
+
+	string_pool str_pool;
 
 	if (do_mesh) {
 
@@ -1940,25 +2101,147 @@ int main(int argc, char **argv)
 			optimize_mesh_part(part, optimize_opts);
 		}
 
+		rh::array<spmdl_node> sp_nodes;
+		rh::array<spmdl_bone> sp_bones;
+		rh::array<spmdl_mesh> sp_meshes;
+		rh::array<char> sp_geometry;
+
+		sp_nodes.reserve(model.nodes.size());
+		sp_meshes.reserve(parts.size());
+
+		for (model_node &node : model.nodes) {
+			spmdl_node sp_node = { };
+			sp_node.parent = node.parent_ix;
+			sp_node.name = str_pool.insert(node.node->name);
+			sp_node.translation = to_spmdl(node.node->transform.translation);
+			sp_node.rotation = to_spmdl(node.node->transform.rotation);
+			sp_node.scale = to_spmdl(node.node->transform.scale);
+			sp_nodes.push_back(std::move(sp_node));
+		}
+
+		for (mesh_part &part : parts) {
+			spmdl_mesh sp_mesh = { };
+			sp_mesh.node = find_node(model, &part.mesh->node);
+			sp_mesh.num_attribs = part.format.num_attribs;
+			sp_mesh.num_vertex_buffers = part.format.num_streams;
+			sp_mesh.num_indices = (uint32_t)part.num_indices;
+			sp_mesh.num_vertices = (uint32_t)part.num_vertices;
+
+			if (part.bones.size() > 0) {
+				sp_mesh.bone_offset = (uint32_t)sp_bones.size();
+				sp_mesh.num_bones = (uint32_t)part.bones.size();
+				for (mesh_bone &bone : part.bones) {
+					spmdl_bone sp_bone = { };
+					sp_bone.node = find_node(model, bone.node);
+					sp_bone.mesh_to_bone = to_spmdl(bone.mesh_to_bind);
+					sp_bones.push_back(sp_bone);
+				}
+			}
+
+			if (part.num_vertices < UINT16_MAX) {
+				rh::array<uint16_t> indices16;
+				indices16.resize_uninit(part.index_data.size());
+				uint16_t *dst = indices16.data();
+				for (uint32_t ix : part.index_data) {
+					*dst++ = (uint16_t)ix;
+				}
+				sp_mesh.index_buffer = sp_push_buffer(sp_geometry, indices16.slice());
+			} else {
+				sp_mesh.index_buffer = sp_push_buffer(sp_geometry, part.index_data.slice());
+			}
+
+			rh::array<char> vertex_data;
+			for (uint32_t i = 0; i < part.format.num_streams; i++) {
+				uint32_t stride = part.format.stream_stride[i];
+				encode_vertex_stream(vertex_data, part, i);
+				sp_mesh.vertex_buffers[i] = sp_push_buffer(sp_geometry, vertex_data.slice(), stride);
+			}
+
+			memcpy(sp_mesh.attribs, part.format.attribs, sizeof(sp_mesh.attribs));
+
+			sp_meshes.push_back(std::move(sp_mesh));
+		}
+
+		spmdl_header header = { };
+		header.header.magic = SPFILE_HEADER_SPMDL;
+		header.header.header_info_size = sizeof(spmdl_info);
+		header.header.num_sections = 5;
+		header.info.num_nodes = (uint32_t)sp_nodes.size();
+		header.info.num_bones = (uint32_t)sp_bones.size();
+		header.info.num_meshes = (uint32_t)sp_meshes.size();
+
+		compress_result c_nodes, c_bones, c_meshes, c_strings, c_geometry;
+
+		uint32_t offset = sizeof(header);
+		init_section(offset, header.s_nodes, c_nodes, sp_nodes.slice(), compress_opts, SPFILE_SECTION_NODES);
+		init_section(offset, header.s_bones, c_bones, sp_bones.slice(), compress_opts, SPFILE_SECTION_BONES);
+		init_section(offset, header.s_meshes, c_meshes, sp_meshes.slice(), compress_opts, SPFILE_SECTION_MESHES);
+		init_section(offset, header.s_strings, c_strings, str_pool.data.slice(), compress_opts, SPFILE_SECTION_STRINGS);
+		init_section(offset, header.s_geometry, c_geometry, sp_geometry.slice(), compress_opts, SPFILE_SECTION_GEOMETRY);
+
 		{
 			FILE *f = fopen(output_file, "wb");
 
-			gltf_file gfile = convert_to_gltf(model, parts);
+			write_pod(f, header);
+			write_pod(f, c_nodes.data.slice());
+			write_pod(f, c_bones.data.slice());
+			write_pod(f, c_meshes.data.slice());
+			write_pod(f, c_strings.data.slice());
+			write_pod(f, c_geometry.data.slice());
+
+			fclose(f);
+		}
+
+#if 0
+		{
+			FILE *f = fopen(output_file, "wb");
+
+			gltf_file gfile = convert_to_gltf(model, parts.slice());
 			write_gltf(f, gfile);
 
 			fclose(f);
 		}
+#endif
+
 	}
 
 	if (do_anim) {
+
+		rh::array<spanim_bone> bones;
+		bones.reserve(model.nodes.size());
+		for (model_node &node : model.nodes) {
+			spanim_bone bone;
+			bone.parent = node.parent_ix;
+			bone.name = str_pool.insert(node.node->name);
+			bones.push_back(std::move(bone));
+		}
+
 		rh::array<char> anim_data;
+		compress_opts.type = SP_COMPRESSION_ZSTD;
 
 		anim_data = compress_animation(model, scene, anim_opts);
+
+		compress_result c_bones, c_strings, c_animation;
+
+		spanim_header header = { };
+		header.header.magic = SPFILE_HEADER_SPANIM;
+		header.header.version = 1;
+		header.header.header_info_size = sizeof(spanim_info);
+		header.header.num_sections = 3;
+		header.info.duration = 1.0;
+
+		uint32_t offset = sizeof(header);
+		init_section(offset, header.s_bones, c_bones, bones.slice(), compress_opts, SPFILE_SECTION_BONES);
+		init_section(offset, header.s_strings, c_strings, str_pool.data.slice(), compress_opts, SPFILE_SECTION_STRINGS);
+		init_section(offset, header.s_animation, c_animation, anim_data.slice(), compress_opts, SPFILE_SECTION_ANIMATION);
 
 		{
 			FILE *f = fopen(output_file, "wb");
 
-			write_data(f, anim_data.data(), anim_data.size());
+			write_pod(f, header);
+			write_pod(f, c_bones.data.slice());
+			write_pod(f, c_strings.data.slice());
+			write_pod(f, c_animation.data.slice());
 
 			fclose(f);
 		}
