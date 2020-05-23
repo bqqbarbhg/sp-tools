@@ -89,11 +89,21 @@ void trivial_copy_range(void *dst, const void *src, size_t count, size_t size);
 void trivial_move_range(void *dst, void *src, size_t count, size_t size);
 void trivial_destruct_range(void *data, size_t count);
 
-template <typename T>
-inline void template_copy_range(void *dst, const void *src, size_t count, size_t size) {
+template <typename T, typename std::enable_if<std::is_copy_constructible<T>::value, int>::type = 0>
+inline void template_copy_range_imp(void *dst, const void *src, size_t count, size_t size) {
 	for (T *dptr = (T*)dst, *sptr = (T*)src, *dend = dptr + count; dptr != dend; dptr++, sptr++) {
 		new (dptr) T((const T&)(*sptr));
 	}
+}
+
+template <typename T, typename std::enable_if<!std::is_copy_constructible<T>::value, int>::type = 0>
+inline void template_copy_range_imp(void *dst, const void *src, size_t count, size_t size) {
+	assert("Type does not support copy construction");
+}
+
+template <typename T>
+inline void template_copy_range(void *dst, const void *src, size_t count, size_t size) {
+	template_copy_range_imp<T>(dst, src, count, size);
 }
 
 template <typename T>

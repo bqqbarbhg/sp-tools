@@ -12,8 +12,14 @@
 #include <limits>
 #include "ufbx.h"
 #include "meshoptimizer/meshoptimizer.h"
+#include "acl/core/ansi_allocator.h"
+#include "acl/algorithm/uniformly_sampled/encoder.h"
+#include "acl/compression/animation_clip.h"
+#include "acl/compression/compress.h"
 #include "rh_hash.h"
 #include "json_output.h"
+
+bool g_verbose;
 
 void failf(const char *fmt, ...)
 {
@@ -152,10 +158,10 @@ struct bone_weight
 
 struct mesh_part
 {
-	ufbx_mesh *mesh;
+	ufbx_mesh *mesh = nullptr;
 	vertex_format format;
 	mesh_data_format data_format;
-	ufbx_material *material;
+	ufbx_material *material = nullptr;
 	size_t num_indices = 0;
 	size_t num_vertices = 0;
 	ufbx_node *root_bone;
@@ -344,23 +350,25 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 		attrib_offset_in_floats += (uint32_t)fmt.attrib_size_in_floats[i];
 	}
 
-	rh::array<uint32_t> remap;
-	remap.resize_uninit(src.indices.size());
+	if (src.indices.size() > 0 && fmt.vertex_size_in_floats > 0) {
+		rh::array<uint32_t> remap;
+		remap.resize_uninit(src.indices.size());
 
-	size_t vertex_size = fmt.vertex_size_in_floats * sizeof(float);
+		size_t vertex_size = fmt.vertex_size_in_floats * sizeof(float);
 
-	part.num_indices = src.indices.size();
-	part.num_vertices = meshopt_generateVertexRemap(remap.data(), NULL, part.num_indices,
-		vertex_data.data(), part.num_indices, vertex_size);
+		part.num_indices = src.indices.size();
+		part.num_vertices = meshopt_generateVertexRemap(remap.data(), NULL, part.num_indices,
+			vertex_data.data(), part.num_indices, vertex_size);
 
-	part.index_data.resize_uninit(part.num_indices);
-	part.vertex_data.resize_uninit(part.num_vertices * fmt.vertex_size_in_floats);
+		part.index_data.resize_uninit(part.num_indices);
+		part.vertex_data.resize_uninit(part.num_vertices * fmt.vertex_size_in_floats);
 
-	meshopt_remapIndexBuffer(part.index_data.data(), NULL, part.num_indices, remap.data());
-	meshopt_remapVertexBuffer(part.vertex_data.data(), vertex_data.data(), part.num_indices,
-		vertex_size, remap.data());
+		meshopt_remapIndexBuffer(part.index_data.data(), NULL, part.num_indices, remap.data());
+		meshopt_remapVertexBuffer(part.vertex_data.data(), vertex_data.data(), part.num_indices,
+			vertex_size, remap.data());
 
-	meshopt_optimizeVertexCache(part.index_data.data(), part.index_data.data(), part.num_indices, part.num_vertices);
+		meshopt_optimizeVertexCache(part.index_data.data(), part.index_data.data(), part.num_indices, part.num_vertices);
+	}
 
 	return part;
 }
@@ -408,15 +416,16 @@ void merge_mesh_part(mesh_part &dst, const mesh_part &src)
 			const spmdl_attrib &attrib = dst.format.attribs[i];
 
 			size_t stride_in_floats = dst.data_format.vertex_size_in_floats;
-			float *dst_data = dst.vertex_data.data() + attrib_offset_in_floats;
 			switch (attrib.attrib) {
 
 			case SP_VERTEX_ATTRIB_BONE_INDEX:
 				{
+					float *dst_data = dst.vertex_data.data() + attrib_offset_in_floats + dst.num_vertices * stride_in_floats;
 					for (size_t vi = 0; vi < src.num_vertices; vi++) {
 						for (size_t j = 0; j < dst.data_format.weights_per_vertex; j++) {
 							dst_data[j] = (float)bone_remap[(int32_t)dst_data[j]];
 						}
+						dst_data += stride_in_floats;
 					}
 				}
 				break;
@@ -1705,17 +1714,91 @@ void write_gltf(FILE *f, const gltf_file &gfile)
 	jso_close(s);
 }
 
+acl::ANSIAllocator acl_ator;
+
+struct animation_opts
+{
+	acl::compression_level8 level = acl::compression_level8::medium;
+};
+
+rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animation_opts &opts)
+{
+	rh::array<char> result;
+
+	rh::array<acl::RigidBone> bones;
+	bones.reserve(mod.nodes.size());
+
+	for (model_node &node : mod.nodes) {
+		ufbx_node *n = node.node;
+		acl::RigidBone bone;
+		bone.name = acl::String(acl_ator, n->name.data, n->name.length);
+		if (node.parent_ix != ~0u) {
+			bone.parent_index = (uint16_t)node.parent_ix;
+		}
+		bone.vertex_distance = 3.0f;
+		// bone.bind_transform.translation = rtm::vector_load3(n->transform.translation.v);
+		// bone.bind_transform.rotation = rtm::quat_load(n->transform.rotation.v);
+		bones.push_back(std::move(bone));
+	}
+
+	acl::RigidSkeleton skeleton(acl_ator, bones.data(), (uint16_t)bones.size());
+
+	ufbx_anim_layer &layer = scene->anim_layers.data[0];
+
+	float sample_rate = 30.0f;
+	float anim_duration = 3.0f;
+
+	uint32_t num_samples = (uint32_t)(anim_duration * sample_rate + 0.9999f);
+	
+	acl::AnimationClip clip(acl_ator, skeleton, num_samples, sample_rate, acl::String());
+
+	for (uint32_t bi = 0; bi < mod.nodes.size(); bi++) {
+		acl::AnimatedBone &bone = clip.get_animated_bone((uint16_t)bi);
+		ufbx_node *node = mod.nodes[bi].node;
+
+		ufbx_evaluate_opts opts = { };
+		opts.layer = &layer;
+
+		for (uint32_t si = 0; si < num_samples; si++) {
+			double time = (double)si / (double)sample_rate;
+			ufbx_transform t = ufbx_evaluate_transform(scene, node, &opts, time);
+			bone.translation_track.set_sample(si, rtm::vector_load3(t.translation.v));
+			bone.rotation_track.set_sample(si, rtm::quat_load(t.rotation.v));
+			bone.scale_track.set_sample(si, rtm::vector_load3(t.scale.v));
+		}
+	}
+
+	acl::CompressionSettings settings = acl::get_default_compression_settings();
+	settings.level = opts.level;
+
+	acl::qvvf_transform_error_metric error_metric;
+	settings.error_metric = &error_metric;
+
+	acl::OutputStats stats;
+	acl::CompressedClip *compressed_clip = nullptr;
+
+	acl::ErrorResult err = acl::uniformly_sampled::compress_clip(acl_ator, clip, settings, compressed_clip, stats);
+	if (err.any()) failf("Failed to compress animation: %s", err.c_str());
+
+	result.insert_back((const char*)compressed_clip, compressed_clip->get_size());
+
+	acl_ator.deallocate(compressed_clip, compressed_clip->get_size());
+
+	return result;
+}
+
 int main(int argc, char **argv)
 {
 	const char *input_file = NULL;
 	const char *output_file = NULL;
-	bool verbose = false;
 	bool show_help = false;
 	int level = 10;
 	int num_threads = 1;
-	vertex_format mesh_format;
+	vertex_format mesh_format = { };
 	bool combine_meshes = false;
 	bool combine_everything = false;
+	bool do_mesh = false;
+	bool do_anim = false;
 
 	// -- Parse arguments
 
@@ -1724,7 +1807,7 @@ int main(int argc, char **argv)
 		int left = argc - argi - 1;
 
 		if (!strcmp(arg, "-v") || !strcmp(arg, "--verbose")) {
-			verbose = true;
+			g_verbose = true;
 		} else if (!strcmp(arg, "--help")) {
 			show_help = true;
 		} else if (!strcmp(arg, "--combine-materials")) {
@@ -1732,6 +1815,10 @@ int main(int argc, char **argv)
 		} else if (!strcmp(arg, "--combine-everything")) {
 			combine_meshes = true;
 			combine_everything = true;
+		} else if (!strcmp(arg, "--mesh")) {
+			do_mesh = true;
+		} else if (!strcmp(arg, "--anim")) {
+			do_anim = true;
 		} else if (left >= 1) {
 			if (!strcmp(arg, "-i") || !strcmp(arg, "--input")) {
 				input_file = argv[++argi];
@@ -1745,7 +1832,7 @@ int main(int argc, char **argv)
 			} else if (!strcmp(arg, "-j") || !strcmp(arg, "--threads")) {
 				num_threads = atoi(argv[++argi]);
 				if (num_threads <= 0 || num_threads > 10000) failf("Bad number of threads: %d");
-			} else if (!strcmp(arg, "--mesh")) {
+			} else if (!strcmp(arg, "--vertex")) {
 				mesh_format = parse_attribs(argv[++argi]);
 			}
 		}
@@ -1771,6 +1858,10 @@ int main(int argc, char **argv)
 	// -- Load input FBX
 
 	ufbx_load_opts ufbx_opts = { };
+
+	// if (!do_mesh) ufbx_opts.ignore_geometry = true;
+	// if (!do_anim) ufbx_opts.ignore_animation = true;
+
 	ufbx_error error;
 	ufbx_scene *scene = ufbx_load_file(input_file, &ufbx_opts, &error);
 	if (!scene) {
@@ -1784,12 +1875,13 @@ int main(int argc, char **argv)
 
 	mesh_opts mesh_opts;
 	optimize_opts optimize_opts;
+	animation_opts anim_opts;
 
 	mesh_opts.format = mesh_format;
 	mesh_data_format fmt = create_mesh_data_format(mesh_opts.format);
 
 	mesh_limits limits;
-	limits.max_bones = 32;
+	limits.max_bones = 64;
 	limits.max_vertices = 65536;
 
 	model model;
@@ -1808,51 +1900,70 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (combine_meshes) {
-		rh::hash_map<merge_key, mesh_part> combined_parts;
+	if (do_mesh) {
 
-		for (mesh_part &part : parts) {
-			merge_key key;
-			key.material = combine_everything ? nullptr : part.material;
-			key.format = part.format;
+		if (combine_meshes) {
+			rh::hash_map<merge_key, mesh_part> combined_parts;
 
-			mesh_part &combined = combined_parts[key];
-			if (combined.mesh == nullptr) {
-				combined = std::move(part);
-			} else {
-				merge_mesh_part(combined, part);
+			for (mesh_part &part : parts) {
+				merge_key key;
+				key.material = combine_everything ? nullptr : part.material;
+				key.format = part.format;
+
+				mesh_part &combined = combined_parts[key];
+				if (combined.mesh == nullptr) {
+					combined = std::move(part);
+				} else {
+					merge_mesh_part(combined, part);
+				}
+			}
+
+			parts.clear();
+			for (auto &pair : combined_parts) {
+				parts.push_back(std::move(pair.value));
 			}
 		}
 
-		parts.clear();
-		for (auto &pair : combined_parts) {
-			parts.push_back(std::move(pair.value));
-		}
-	}
+		{
+			rh::array<mesh_part> split_parts;
+			split_parts.reserve(parts.size());
 
-	{
-		rh::array<mesh_part> split_parts;
-		split_parts.reserve(parts.size());
+			for (mesh_part &part : parts) {
+				split_parts.insert_back(split_mesh(std::move(part), limits));
+			}
+
+			parts = std::move(split_parts);
+		}
 
 		for (mesh_part &part : parts) {
-			split_parts.insert_back(split_mesh(std::move(part), limits));
+			optimize_mesh_part(part, optimize_opts);
 		}
 
-		parts = std::move(split_parts);
+		{
+			FILE *f = fopen(output_file, "wb");
+
+			gltf_file gfile = convert_to_gltf(model, parts);
+			write_gltf(f, gfile);
+
+			fclose(f);
+		}
 	}
 
-	for (mesh_part &part : parts) {
-		optimize_mesh_part(part, optimize_opts);
+	if (do_anim) {
+		rh::array<char> anim_data;
+
+		anim_data = compress_animation(model, scene, anim_opts);
+
+		{
+			FILE *f = fopen(output_file, "wb");
+
+			write_data(f, anim_data.data(), anim_data.size());
+
+			fclose(f);
+		}
 	}
 
-	{
-		FILE *f = fopen(output_file, "wb");
-
-		gltf_file gfile = convert_to_gltf(model, parts);
-		write_gltf(f, gfile);
-
-		fclose(f);
-	}
+	ufbx_free_scene(scene);
 
 	return 0;
 }

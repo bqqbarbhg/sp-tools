@@ -16,8 +16,9 @@ typedef enum {
 } sp_compression_type;
 
 typedef enum sp_magic {
-	SP_MAGIC_SPTEX = 0x78747073, // 'sptx'
-	SP_MAGIC_SPMDL = 0x646d7073, // 'spmd'
+	SP_MAGIC_SPTEX  = 0x78747073, // 'sptx'
+	SP_MAGIC_SPMDL  = 0x646d7073, // 'spmd'
+	SP_MAGIC_SPANIM = 0x6e617073, // 'span'
 
 	SP_MAGIC_FORCE_U32 = 0x7fffffff,
 } sp_magic;
@@ -174,7 +175,7 @@ typedef struct spmdl_string
 
 typedef struct spmdl_header
 {
-	sp_magic magic; // = SP_MAGIC_SPMD
+	sp_magic magic; // = SP_MAGIC_SPMDL
 	uint32_t version;
 	uint32_t num_nodes;
 	uint32_t num_meshes;
@@ -239,6 +240,18 @@ typedef struct spmdl_mesh
 	spmdl_buffer index_buffer;
 	spmdl_attrib attribs[SPMDL_MAX_VERTEX_ATTRIBS];
 } spmdl_mesh;
+
+typedef struct spanim_header
+{
+	sp_magic magic; // = SP_MAGIC_SPMDL
+	uint32_t version;
+	uint32_t num_nodes;
+	uint32_t num_meshes;
+	uint32_t num_bones;
+	uint32_t num_materials;
+	uint32_t string_data_size;
+	uint32_t encoded_animation_size;
+} spmdl_node;
 
 #ifdef __cplusplus
 }
