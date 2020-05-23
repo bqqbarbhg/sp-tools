@@ -1743,25 +1743,26 @@ rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animatio
 
 	acl::RigidSkeleton skeleton(acl_ator, bones.data(), (uint16_t)bones.size());
 
-	ufbx_anim_layer &layer = scene->anim_layers.data[0];
+	if (scene->anim_stacks.size == 0) {
+		failf("No aniamtion stacks found");
+	}
+	ufbx_anim_stack *stack = &scene->anim_stacks.data[0];
 
-	float sample_rate = 30.0f;
-	float anim_duration = 3.0f;
+	double sample_rate = 30.0;
+	double anim_duration = stack->time_end - stack->time_begin;
+	if (anim_duration < 1.0/sample_rate) anim_duration  = 1.0/sample_rate;
 
-	uint32_t num_samples = (uint32_t)(anim_duration * sample_rate + 0.9999f);
+	uint32_t num_samples = (uint32_t)(anim_duration * sample_rate + 0.9999);
 	
-	acl::AnimationClip clip(acl_ator, skeleton, num_samples, sample_rate, acl::String());
+	acl::AnimationClip clip(acl_ator, skeleton, num_samples, (float)sample_rate, acl::String());
 
 	for (uint32_t bi = 0; bi < mod.nodes.size(); bi++) {
 		acl::AnimatedBone &bone = clip.get_animated_bone((uint16_t)bi);
 		ufbx_node *node = mod.nodes[bi].node;
 
-		ufbx_evaluate_opts opts = { };
-		opts.layer = &layer;
-
 		for (uint32_t si = 0; si < num_samples; si++) {
-			double time = (double)si / (double)sample_rate;
-			ufbx_transform t = ufbx_evaluate_transform(scene, node, &opts, time);
+			double time = (double)si / sample_rate + stack->time_begin;
+			ufbx_transform t = ufbx_evaluate_transform(scene, node, stack, time);
 			bone.translation_track.set_sample(si, rtm::vector_load3(t.translation.v));
 			bone.rotation_track.set_sample(si, rtm::quat_load(t.rotation.v));
 			bone.scale_track.set_sample(si, rtm::vector_load3(t.scale.v));

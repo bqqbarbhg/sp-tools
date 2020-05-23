@@ -243,15 +243,12 @@ typedef struct spmdl_mesh
 
 typedef struct spanim_header
 {
-	sp_magic magic; // = SP_MAGIC_SPMDL
+	sp_magic magic; // = SP_MAGIC_SPANIM
 	uint32_t version;
 	uint32_t num_nodes;
-	uint32_t num_meshes;
-	uint32_t num_bones;
-	uint32_t num_materials;
 	uint32_t string_data_size;
 	uint32_t encoded_animation_size;
-} spmdl_node;
+} spanim_header;
 
 #ifdef __cplusplus
 }
