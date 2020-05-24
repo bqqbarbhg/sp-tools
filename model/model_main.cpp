@@ -1870,7 +1870,7 @@ struct animation_opts
 	acl::compression_level8 level = acl::compression_level8::medium;
 };
 
-rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animation_opts &opts)
+rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animation_opts &opts, double &out_duration)
 {
 	rh::array<char> result;
 
@@ -1900,6 +1900,8 @@ rh::array<char> compress_animation(model &mod, ufbx_scene *scene, const animatio
 	double sample_rate = 30.0;
 	double anim_duration = stack->time_end - stack->time_begin;
 	if (anim_duration < 1.0/sample_rate) anim_duration  = 1.0/sample_rate;
+
+	out_duration = anim_duration;
 
 	uint32_t num_samples = (uint32_t)(anim_duration * sample_rate + 0.9999);
 	
@@ -2376,7 +2378,8 @@ int main(int argc, char **argv)
 
 		rh::array<char> anim_data;
 
-		anim_data = compress_animation(model, scene, anim_opts);
+		double duration;
+		anim_data = compress_animation(model, scene, anim_opts, duration);
 
 		compress_result c_bones, c_strings, c_animation;
 
@@ -2385,7 +2388,8 @@ int main(int argc, char **argv)
 		header.header.version = 1;
 		header.header.header_info_size = sizeof(spanim_info);
 		header.header.num_sections = 3;
-		header.info.duration = 1.0;
+		header.info.duration = duration;
+		header.info.num_bones = bones.size();
 
 		uint32_t offset = sizeof(header);
 		init_section(offset, header.s_bones, c_bones, bones.slice(), compress_opts, SPFILE_SECTION_BONES);
