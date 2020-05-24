@@ -18,6 +18,7 @@
 #include "acl/compression/compress.h"
 #include "rh_hash.h"
 #include "json_output.h"
+#include "mikktspace.h"
 
 bool g_verbose;
 
@@ -43,10 +44,13 @@ struct attrib_info {
 attrib_info attrib_list[] = {
 	{ "pos", "position", SP_VERTEX_ATTRIB_POSITION },
 	{ "nrm", "normal", SP_VERTEX_ATTRIB_NORMAL },
+	{ "tan", "tangent", SP_VERTEX_ATTRIB_TANGENT },
+	{ "tsgn", "tangent-sign", SP_VERTEX_ATTRIB_TANGENT_SIGN },
 	{ "uv", "uv", SP_VERTEX_ATTRIB_UV },
 	{ "col", "color", SP_VERTEX_ATTRIB_COLOR },
 	{ "bonei", "bone-index", SP_VERTEX_ATTRIB_BONE_INDEX },
 	{ "bonew", "bone-weight", SP_VERTEX_ATTRIB_BONE_WEIGHT },
+	{ "pad", "padding", SP_VERTEX_ATTRIB_PADDING },
 };
 
 struct vertex_format {
@@ -229,6 +233,8 @@ mesh_data_format create_mesh_data_format(const vertex_format &format)
 			attrib_size_in_floats = 3;
 			break;
 		case SP_VERTEX_ATTRIB_NORMAL: attrib_size_in_floats = 3; break;
+		case SP_VERTEX_ATTRIB_TANGENT: attrib_size_in_floats = 4; break;
+		case SP_VERTEX_ATTRIB_TANGENT_SIGN: attrib_size_in_floats = 1; break;
 		case SP_VERTEX_ATTRIB_UV: attrib_size_in_floats = 2; break;
 		case SP_VERTEX_ATTRIB_COLOR: attrib_size_in_floats = 4; break;
 		case SP_VERTEX_ATTRIB_BONE_INDEX:
@@ -240,6 +246,7 @@ mesh_data_format create_mesh_data_format(const vertex_format &format)
 				failf("Vertex attribute bone/weight size mismatch");
 			}
 			break;
+		case SP_VERTEX_ATTRIB_PADDING: attrib_size_in_floats = 0; break;
 		}
 
 		fmt.attrib_size_in_floats[i] = (uint8_t)attrib_size_in_floats;
@@ -248,6 +255,71 @@ mesh_data_format create_mesh_data_format(const vertex_format &format)
 
 	return fmt;
 }
+
+struct tangent_generator
+{
+	float *vertex_data = nullptr;
+	uint32_t vertex_stride = ~0u;
+	uint32_t num_triangles = ~0u;
+	uint32_t position_offset = ~0u;
+	uint32_t normal_offset = ~0u;
+	uint32_t uv_offset = ~0u;
+	uint32_t tangent_offset = ~0u;
+	uint32_t tangent_sign_offset = ~0u;
+};
+
+int tangent_getNumFaces(const SMikkTSpaceContext * pContext)
+{
+	tangent_generator *tg = (tangent_generator*)pContext->m_pUserData;
+	return tg->num_triangles;
+}
+
+int tangent_getNumVerticesOfFace(const SMikkTSpaceContext * pContext, const int iFace)
+{
+	return 3;
+}
+
+void tangent_getPosition(const SMikkTSpaceContext * pContext, float fvPosOut[], const int iFace, const int iVert)
+{
+	tangent_generator *tg = (tangent_generator*)pContext->m_pUserData;
+	const float* v = tg->vertex_data + (iFace * 3 + iVert) * tg->vertex_stride + tg->position_offset;
+	fvPosOut[0] = v[0]; fvPosOut[1] = v[1]; fvPosOut[2] = v[2];
+}
+
+void tangent_getNormal(const SMikkTSpaceContext * pContext, float fvNormOut[], const int iFace, const int iVert)
+{
+	tangent_generator *tg = (tangent_generator*)pContext->m_pUserData;
+	const float* v = tg->vertex_data + (iFace * 3 + iVert) * tg->vertex_stride + tg->normal_offset;
+	fvNormOut[0] = v[0]; fvNormOut[1] = v[1]; fvNormOut[2] = v[2];
+}
+
+void tangent_getTexCoord(const SMikkTSpaceContext * pContext, float fvTexcOut[], const int iFace, const int iVert)
+{
+	tangent_generator *tg = (tangent_generator*)pContext->m_pUserData;
+	const float* v = tg->vertex_data + (iFace * 3 + iVert) * tg->vertex_stride + tg->uv_offset;
+	fvTexcOut[0] = v[0]; fvTexcOut[1] = v[1];
+}
+
+void tangent_setTSpaceBasic(const SMikkTSpaceContext * pContext, const float fvTangent[], const float fSign, const int iFace, const int iVert)
+{
+	tangent_generator *tg = (tangent_generator*)pContext->m_pUserData;
+	float* dst = tg->vertex_data + (iFace * 3 + iVert) * tg->vertex_stride + tg->tangent_offset;
+	dst[0] = fvTangent[0]; dst[1] = fvTangent[1]; dst[2] = fvTangent[2]; dst[3] = fSign;
+
+	if (tg->tangent_sign_offset != ~0u) {
+		float* sdst = tg->vertex_data + (iFace * 3 + iVert) * tg->vertex_stride + tg->tangent_sign_offset;
+		sdst[0] = fSign;
+	}
+}
+
+SMikkTSpaceInterface tangent_interface = {
+	&tangent_getNumFaces,
+	&tangent_getNumVerticesOfFace,
+	&tangent_getPosition,
+	&tangent_getNormal,
+	&tangent_getTexCoord,
+	&tangent_setTSpaceBasic,
+};
 
 mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const mesh_opts &opts, const mesh_part_source &src, uint32_t material_ix)
 {
@@ -269,11 +341,16 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 	rh::array<int32_t> bone_remap;
 	bone_remap.resize(src.bones.size(), -1);
 
+	uint32_t normal_offset_in_floats = ~0u;
+	uint32_t uv_offset_in_floats = ~0u;
+	uint32_t tangent_offset_in_floats = ~0u;
+	uint32_t tangent_sign_offset_in_floats = ~0u;
+	size_t stride_in_floats = fmt.vertex_size_in_floats;
+
 	uint32_t attrib_offset_in_floats = 0;
 	for (uint32_t i = 0; i < opts.format.num_attribs; i++) {
 		const spmdl_attrib &attrib = opts.format.attribs[i];
 
-		size_t stride_in_floats = fmt.vertex_size_in_floats;
 		float *dst = vertex_data.data() + attrib_offset_in_floats;
 		switch (attrib.attrib) {
 
@@ -288,6 +365,7 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 			break;
 
 		case SP_VERTEX_ATTRIB_NORMAL:
+			normal_offset_in_floats = attrib_offset_in_floats;
 			if (src.normals) {
 				for (size_t i : src.indices) {
 					ufbx_vec3 v = src.normals[mesh->vertex_normal.indices[i]];
@@ -297,7 +375,16 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 			}
 			break;
 
+		case SP_VERTEX_ATTRIB_TANGENT:
+			tangent_offset_in_floats = attrib_offset_in_floats;
+			break;
+
+		case SP_VERTEX_ATTRIB_TANGENT_SIGN:
+			tangent_sign_offset_in_floats = attrib_offset_in_floats;
+			break;
+
 		case SP_VERTEX_ATTRIB_UV:
+			uv_offset_in_floats = attrib_offset_in_floats;
 			if (mesh->vertex_uv.data) {
 				for (size_t i : src.indices) {
 					ufbx_vec2 v = ufbx_get_vertex_vec2(&mesh->vertex_uv, i);
@@ -348,6 +435,23 @@ mesh_part process_mesh_part(ufbx_mesh *mesh, const mesh_data_format &fmt, const 
 		}
 
 		attrib_offset_in_floats += (uint32_t)fmt.attrib_size_in_floats[i];
+	}
+
+	if (normal_offset_in_floats != ~0u && uv_offset_in_floats != ~0u && tangent_offset_in_floats != ~0u) {
+		tangent_generator tg;
+		tg.vertex_data = vertex_data.data();
+		tg.num_triangles = (uint32_t)src.indices.size() / 3;
+		tg.vertex_stride = (uint32_t)stride_in_floats;
+		tg.position_offset = fmt.position_offset_in_floats;
+		tg.normal_offset = normal_offset_in_floats;
+		tg.uv_offset = uv_offset_in_floats;
+		tg.tangent_offset = tangent_offset_in_floats;
+		tg.tangent_sign_offset = tangent_sign_offset_in_floats;
+
+		SMikkTSpaceContext ctx;
+		ctx.m_pInterface = &tangent_interface;
+		ctx.m_pUserData = &tg;
+		genTangSpaceDefault(&ctx);
 	}
 
 	if (src.indices.size() > 0 && fmt.vertex_size_in_floats > 0) {
@@ -640,8 +744,10 @@ rh::array<mesh_part> process_mesh(ufbx_mesh *mesh, const mesh_data_format &fmt, 
 
 		if (src.normals) {
 			ufbx_matrix normal_to_root = ufbx_get_normal_matrix(&mesh->node.to_root);
-			for (size_t i = 0; i < mesh->vertex_position.num_elements; i++) {
-				ufbx_vec3 v = ufbx_transform_position(&normal_to_root, mesh->vertex_position.data[i]);
+			for (size_t i = 0; i < mesh->vertex_normal.num_elements; i++) {
+				ufbx_vec3 v = ufbx_transform_direction(&normal_to_root, mesh->vertex_normal.data[i]);
+				double len = sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+				v.x /= len; v.y /= len; v.z /= len;
 				transformed_normals.push_back(v);
 			}
 			src.normals = transformed_normals.data();
@@ -712,11 +818,9 @@ rh::array<mesh_part> process_mesh(ufbx_mesh *mesh, const mesh_data_format &fmt, 
 	if (num_materials == 0) num_materials = 1;
 
 	int32_t *face_material = mesh->face_material;
-	for (uint32_t mat_ix = 0; mat_ix < mesh->materials.size; mat_ix++) {
+	for (uint32_t mat_ix = 0; mat_ix < num_materials; mat_ix++) {
 
 		src.indices.clear();
-
-		size_t num_triangles = 0;
 
 		for (size_t fi = 0; fi < mesh->num_faces; fi++) {
 			if (face_material && face_material[fi] != mat_ix) continue;
@@ -1187,7 +1291,7 @@ struct gltf_accessor
 
 struct gltf_attribute
 {
-	const char *name;
+	const char *name = nullptr;
 	uint32_t accessor;
 };
 
@@ -1393,13 +1497,17 @@ gltf_file convert_to_gltf(const model &mod, rh::slice<mesh_part> parts)
 				switch (attrib.attrib) {
 				case SP_VERTEX_ATTRIB_POSITION: gattrib.name = "POSITION"; break;
 				case SP_VERTEX_ATTRIB_NORMAL: gattrib.name = "NORMAL"; break;
+				case SP_VERTEX_ATTRIB_TANGENT: gattrib.name = "TANGENT"; break;
 				case SP_VERTEX_ATTRIB_UV: gattrib.name = "TEXCOORD_0"; break;
 				case SP_VERTEX_ATTRIB_COLOR: gattrib.name = "COLOR_0"; break;
 				case SP_VERTEX_ATTRIB_BONE_INDEX: gattrib.name = "JOINTS_0"; break;
 				case SP_VERTEX_ATTRIB_BONE_WEIGHT: gattrib.name = "WEIGHTS_0"; break;
+				default: /* nop */ break;
 				}
 
-				gprim.attributes.push_back(std::move(gattrib));
+				if (gattrib.name) {
+					gprim.attributes.push_back(std::move(gattrib));
+				}
 			}
 		}
 
@@ -1903,20 +2011,25 @@ struct compress_result
 	sp_compression_type type;
 };
 
-compress_result compress(rh::slice<const char> data, const compress_opts &opts)
+compress_result compress(rh::slice<const char> data, const compress_opts &opts, uint32_t pre_padding=0)
 {
 	compress_result result;
-	result.data.resize_uninit(sp_get_compression_bound(opts.type, data.size));
+	result.data.resize_uninit(sp_get_compression_bound(opts.type, data.size) + pre_padding);
 	result.type = opts.type;
 
-	size_t compressed_size = sp_compress_buffer(opts.type, result.data.data(), result.data.size(), data.data, data.size, opts.level);
+	size_t compressed_size = sp_compress_buffer(opts.type, result.data.data() + pre_padding, result.data.size() - pre_padding, data.data, data.size, opts.level);
 	if (compressed_size >= (size_t)(data.size * opts.uncompressed_threshold)) {
 		if (opts.type != SP_COMPRESSION_NONE) {
-			result.data.resize_uninit(data.size);
-			memcpy(result.data.data(), data.data, data.size);
+			result.data.resize_uninit(pre_padding + data.size);
+			memcpy(result.data.data() + pre_padding, data.data, data.size);
+			result.type = SP_COMPRESSION_NONE;
 		}
 	} else {
-		result.data.resize_uninit(compressed_size);
+		result.data.resize_uninit(pre_padding + compressed_size);
+	}
+
+	if (pre_padding > 0) {
+		memset(result.data.data(), 0, pre_padding);
 	}
 
 	return result;
@@ -1925,13 +2038,18 @@ compress_result compress(rh::slice<const char> data, const compress_opts &opts)
 template <typename T>
 void init_section(uint32_t &offset, spfile_section &section, compress_result &res, rh::slice<T> data, const compress_opts &opts, spfile_section_magic magic, uint32_t index=0)
 {
-	res = compress(rh::slice<const char>((char*)data.data, data.size * sizeof(T)), opts);
+	uint32_t pre_padding = 0;
+	while (offset % 16 != 0) {
+		offset++;
+		pre_padding++;
+	}
+	res = compress(rh::slice<const char>((char*)data.data, data.size * sizeof(T)), opts, pre_padding);
 	section.magic = magic;
 	section.compression_type = res.type;
 	section.index = index;
 	section.offset = offset;
 	section.uncompressed_size = (uint32_t)data.size * sizeof(T);
-	section.compressed_size = (uint32_t)res.data.size();
+	section.compressed_size = (uint32_t)res.data.size() - pre_padding;
 	offset += section.compressed_size;
 }
 
@@ -1940,7 +2058,7 @@ spmdl_buffer sp_push_buffer(rh::array<char> &geometry, rh::slice<T> data, uint32
 {
 	spmdl_buffer buf;
 	buf.offset = (uint32_t)geometry.size();
-	buf.size = (uint32_t)data.size * sizeof(T);
+	buf.encoded_size = (uint32_t)data.size * sizeof(T);
 	buf.stride = stride;
 	geometry.insert_back((char*)data.data, data.size * sizeof(T));
 	return buf;
@@ -1956,8 +2074,10 @@ int main(int argc, char **argv)
 	vertex_format mesh_format = { };
 	bool combine_meshes = false;
 	bool combine_everything = false;
+	bool transform_to_root = false;
 	bool do_mesh = false;
 	bool do_anim = false;
+	const char *format_spec = "";
 
 	// -- Parse arguments
 
@@ -1974,6 +2094,8 @@ int main(int argc, char **argv)
 		} else if (!strcmp(arg, "--combine-everything")) {
 			combine_meshes = true;
 			combine_everything = true;
+		} else if (!strcmp(arg, "--transform-to-root")) {
+			transform_to_root = true;
 		} else if (!strcmp(arg, "--mesh")) {
 			do_mesh = true;
 		} else if (!strcmp(arg, "--anim")) {
@@ -1992,7 +2114,7 @@ int main(int argc, char **argv)
 				num_threads = atoi(argv[++argi]);
 				if (num_threads <= 0 || num_threads > 10000) failf("Bad number of threads: %d");
 			} else if (!strcmp(arg, "--vertex")) {
-				mesh_format = parse_attribs(argv[++argi]);
+				format_spec = argv[++argi];
 			}
 		}
 	}
@@ -2013,6 +2135,7 @@ int main(int argc, char **argv)
 
 	if (!input_file) failf("Input file required: -i <input>");
 	if (!output_file) failf("Output file required: -o <output>");
+	mesh_format = parse_attribs(format_spec);
 
 	// -- Load input FBX
 
@@ -2033,9 +2156,18 @@ int main(int argc, char **argv)
 	}
 
 	mesh_opts mesh_opts;
+	mesh_opts.transform_to_root = transform_to_root;
+
 	optimize_opts optimize_opts;
 	animation_opts anim_opts;
+	if (level <= 3) anim_opts.level = acl::compression_level8::lowest;
+	else if (level <= 7) anim_opts.level = acl::compression_level8::low;
+	else if (level <= 14) anim_opts.level = acl::compression_level8::medium;
+	else if (level <= 18) anim_opts.level = acl::compression_level8::high;
+	else anim_opts.level = acl::compression_level8::highest;
+
 	compress_opts compress_opts;
+	compress_opts.level = level;
 
 	mesh_opts.format = mesh_format;
 	mesh_data_format fmt = create_mesh_data_format(mesh_opts.format);
@@ -2043,6 +2175,21 @@ int main(int argc, char **argv)
 	mesh_limits limits;
 	limits.max_bones = 64;
 	limits.max_vertices = 0xffff;
+
+	if (g_verbose) {
+		printf("Vertex format: %s\n", format_spec);
+		for (uint32_t si = 0; si < mesh_format.num_streams; si++) {
+			printf("  Stream %u, stride %u bytes:\n", si, mesh_format.stream_stride[si]);
+			for (uint32_t ai = 0; ai < mesh_format.num_attribs; ai++) {
+				spmdl_attrib &attrib = mesh_format.attribs[ai];
+				if (attrib.stream != si) continue;
+
+				attrib_info attrib_info = attrib_list[attrib.attrib];
+				sp_format_info fmt_info = sp_format_infos[attrib.format];
+				printf("   %3d (0x%02x)  %-12s %-8s   (%2u bytes)\n", attrib.offset, attrib.offset, attrib_info.name, fmt_info.short_name, fmt_info.block_size);
+			}
+		}
+	}
 
 	model model;
 
@@ -2104,7 +2251,8 @@ int main(int argc, char **argv)
 		rh::array<spmdl_node> sp_nodes;
 		rh::array<spmdl_bone> sp_bones;
 		rh::array<spmdl_mesh> sp_meshes;
-		rh::array<char> sp_geometry;
+		rh::array<char> sp_vertex;
+		rh::array<char> sp_index;
 
 		sp_nodes.reserve(model.nodes.size());
 		sp_meshes.reserve(parts.size());
@@ -2145,16 +2293,23 @@ int main(int argc, char **argv)
 				for (uint32_t ix : part.index_data) {
 					*dst++ = (uint16_t)ix;
 				}
-				sp_mesh.index_buffer = sp_push_buffer(sp_geometry, indices16.slice());
+				sp_mesh.index_buffer = sp_push_buffer(sp_index, indices16.slice());
 			} else {
-				sp_mesh.index_buffer = sp_push_buffer(sp_geometry, part.index_data.slice());
+				sp_mesh.index_buffer = sp_push_buffer(sp_index, part.index_data.slice());
 			}
+
+			// Pad indices to 4 bytes
+			while (sp_index.size() % 4 != 0) sp_index.push_back(0);
 
 			rh::array<char> vertex_data;
 			for (uint32_t i = 0; i < part.format.num_streams; i++) {
 				uint32_t stride = part.format.stream_stride[i];
 				encode_vertex_stream(vertex_data, part, i);
-				sp_mesh.vertex_buffers[i] = sp_push_buffer(sp_geometry, vertex_data.slice(), stride);
+
+				// Pre-pad vertices to stride bytes
+				while (sp_vertex.size() % stride != 0) sp_vertex.push_back(0);
+
+				sp_mesh.vertex_buffers[i] = sp_push_buffer(sp_vertex, vertex_data.slice(), stride);
 			}
 
 			memcpy(sp_mesh.attribs, part.format.attribs, sizeof(sp_mesh.attribs));
@@ -2166,18 +2321,20 @@ int main(int argc, char **argv)
 		header.header.magic = SPFILE_HEADER_SPMDL;
 		header.header.header_info_size = sizeof(spmdl_info);
 		header.header.num_sections = 5;
+		header.header.version = 1;
 		header.info.num_nodes = (uint32_t)sp_nodes.size();
 		header.info.num_bones = (uint32_t)sp_bones.size();
 		header.info.num_meshes = (uint32_t)sp_meshes.size();
 
-		compress_result c_nodes, c_bones, c_meshes, c_strings, c_geometry;
+		compress_result c_nodes, c_bones, c_meshes, c_strings, c_vertex, c_index;
 
 		uint32_t offset = sizeof(header);
 		init_section(offset, header.s_nodes, c_nodes, sp_nodes.slice(), compress_opts, SPFILE_SECTION_NODES);
 		init_section(offset, header.s_bones, c_bones, sp_bones.slice(), compress_opts, SPFILE_SECTION_BONES);
 		init_section(offset, header.s_meshes, c_meshes, sp_meshes.slice(), compress_opts, SPFILE_SECTION_MESHES);
 		init_section(offset, header.s_strings, c_strings, str_pool.data.slice(), compress_opts, SPFILE_SECTION_STRINGS);
-		init_section(offset, header.s_geometry, c_geometry, sp_geometry.slice(), compress_opts, SPFILE_SECTION_GEOMETRY);
+		init_section(offset, header.s_vertex, c_vertex, sp_vertex.slice(), compress_opts, SPFILE_SECTION_VERTEX);
+		init_section(offset, header.s_index, c_index, sp_index.slice(), compress_opts, SPFILE_SECTION_INDEX);
 
 		{
 			FILE *f = fopen(output_file, "wb");
@@ -2187,7 +2344,8 @@ int main(int argc, char **argv)
 			write_pod(f, c_bones.data.slice());
 			write_pod(f, c_meshes.data.slice());
 			write_pod(f, c_strings.data.slice());
-			write_pod(f, c_geometry.data.slice());
+			write_pod(f, c_vertex.data.slice());
+			write_pod(f, c_index.data.slice());
 
 			fclose(f);
 		}
@@ -2217,7 +2375,6 @@ int main(int argc, char **argv)
 		}
 
 		rh::array<char> anim_data;
-		compress_opts.type = SP_COMPRESSION_ZSTD;
 
 		anim_data = compress_animation(model, scene, anim_opts);
 

@@ -81,10 +81,13 @@ typedef enum sp_format {
 typedef enum sp_vertex_attrib {
 	SP_VERTEX_ATTRIB_POSITION,
 	SP_VERTEX_ATTRIB_NORMAL,
+	SP_VERTEX_ATTRIB_TANGENT,
+	SP_VERTEX_ATTRIB_TANGENT_SIGN,
 	SP_VERTEX_ATTRIB_UV,
 	SP_VERTEX_ATTRIB_COLOR,
 	SP_VERTEX_ATTRIB_BONE_INDEX,
 	SP_VERTEX_ATTRIB_BONE_WEIGHT,
+	SP_VERTEX_ATTRIB_PADDING,
 
 	SP_VERTEX_ATTRIB_COUNT,
 	SP_VERTEX_ATTRIB_FORCE_U32 = 0x7fffffff,
@@ -133,7 +136,8 @@ typedef enum spfile_section_magic {
 	SPFILE_SECTION_BONES     = 0x656e6f62, // 'bone'
 	SPFILE_SECTION_NODES     = 0x65646f6e, // 'node'
 	SPFILE_SECTION_MESHES    = 0x6873656d, // 'mesh'
-	SPFILE_SECTION_GEOMETRY  = 0x6d6f6567, // 'geom'
+	SPFILE_SECTION_VERTEX    = 0x78747276, // 'vrtx'
+	SPFILE_SECTION_INDEX     = 0x78646e69, // 'indx'
 	SPFILE_SECTION_MIP       = 0x2070696d, // 'mip '
 	SPFILE_SECTION_ANIMATION = 0x6d696e61, // 'anim'
 
@@ -221,7 +225,7 @@ typedef struct spmdl_bone
 typedef struct spmdl_buffer
 {
 	uint32_t offset;
-	uint32_t size;
+	uint32_t encoded_size;
 	uint32_t stride;
 } spmdl_buffer;
 
@@ -266,7 +270,8 @@ typedef struct spmdl_header {
 	spfile_section s_bones;    // spmdl_bone[info.num_bones]
 	spfile_section s_meshes;   // spmdl_mesh[info.num_meshes]
 	spfile_section s_strings;  // char[uncompressed_size]
-	spfile_section s_geometry; // char[uncompressed_size]
+	spfile_section s_vertex;   // char[uncompressed_size]
+	spfile_section s_index;    // char[uncompressed_size]
 } spmdl_header;
 
 typedef struct sptex_mip {
