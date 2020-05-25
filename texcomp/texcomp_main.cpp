@@ -9,7 +9,7 @@
 #include "rgbcx.h"
 #include "astcenc.h"
 #include "image.h"
-#include "../sp_tools_common.h"
+#include "sp_tools_common.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

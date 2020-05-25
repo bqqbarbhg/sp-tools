@@ -1,5 +1,5 @@
 #include "sp_tools_common.h"
-#include "ext/zstd.h"
+#include "zstd.h"
 #include <assert.h>
 #include <string.h>
 

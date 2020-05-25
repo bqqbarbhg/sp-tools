@@ -1,6 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include "../sp_tools_common.h"
+#include "sp_tools_common.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -2389,7 +2389,7 @@ int main(int argc, char **argv)
 		header.header.header_info_size = sizeof(spanim_info);
 		header.header.num_sections = 3;
 		header.info.duration = duration;
-		header.info.num_bones = bones.size();
+		header.info.num_bones = (uint32_t)bones.size();
 
 		uint32_t offset = sizeof(header);
 		init_section(offset, header.s_bones, c_bones, bones.slice(), compress_opts, SPFILE_SECTION_BONES);
