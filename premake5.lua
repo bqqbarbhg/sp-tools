@@ -26,6 +26,9 @@ workspace "sp-tools"
 	exceptionhandling "Off"
 	rtti "Off"
 
+	filter { "system:linux" }
+		linkoptions "-pthread"
+
 	if cppdialect ~= nil then
 		cppdialect "C++14"
 	else
@@ -37,6 +40,7 @@ workspace "sp-tools"
 
 	filter "not action:vs*"
 		buildoptions { "-Wno-invalid-offsetof" }
+		buildoptions { "-Wno-switch" }
 
 	filter "configurations:debug"
 		defines { "DEBUG" }

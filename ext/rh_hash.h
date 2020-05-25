@@ -8,6 +8,7 @@
 #include <utility>
 #include <type_traits>
 #include <string.h>
+#include <stddef.h>
 
 namespace rh {
 
@@ -29,10 +30,12 @@ static RHMAP_FORCEINLINE uint32_t hash(float v) { uint32_t u; memcpy(&u, &v, siz
 static RHMAP_FORCEINLINE uint32_t hash(double v) { uint64_t u; memcpy(&u, &v, sizeof(double)); return hash(u); }
 static RHMAP_FORCEINLINE uint32_t hash(void *v) { return hash((uintptr_t)v); }
 
+#if 0
 template <typename T>
-static RHMAP_FORCEINLINE decltype(std::hash<T>()(*(const T*)0)) hash(const T &t) {
-	return std::hash<T>()(t);
+static RHMAP_FORCEINLINE decltype(typename std::hash<T>()(*(const T*)0)) hash(const T &t) {
+	return typename std::hash<T>()(t);
 }
+#endif
 
 template <typename T>
 struct default_hash {

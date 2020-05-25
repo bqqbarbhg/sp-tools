@@ -299,7 +299,7 @@ static void parallel_for(int num_threads, int num, F f) {
 	} else {
 		std::vector<std::thread> threads;
 		threads.reserve(num_threads - 1);
-		std::atomic_int a_index = 0;
+		std::atomic_int a_index { 0 };
 		for (int thread_i = 0; thread_i < num_threads - 1; thread_i++) {
 			threads.emplace_back([&]() {
 				for (;;) {

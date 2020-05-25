@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 typedef void (*astcenc_progress_fn)(void *user, size_t current, size_t total);
 
