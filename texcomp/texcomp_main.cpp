@@ -956,7 +956,13 @@ int main(int argc, char **argv)
 		}
 
 		sp_compression_type compression_type = SP_COMPRESSION_ZSTD;
-		size_t bound = sp_get_compression_bound(compression_type, mip_data_offset);
+		size_t bound = 0;
+		for (int i = 0; i < num_mips; i++) {
+			// Padding
+			bound += 16;
+
+			bound += sp_get_compression_bound(compression_type, mips[i].data_size);
+		}
 		char *compress_buf = (char*)malloc(bound);
 		if (!compress_buf) failf("Failed to allocate lossless compression buffer");
 
@@ -980,6 +986,11 @@ int main(int argc, char **argv)
 		size_t compress_offset = 0;
 
 		for (int i = 0; i < num_mips; i++) {
+			while ((compress_offset + header_size) % 16 != 0) {
+				compress_offset++;
+				compress_buf[compress_offset] = '\0';
+			}
+
 			spfile_section *s_mip = &header.s_mips[i];
 			size_t compressed_size = sp_compress_buffer(compression_type,
 				compress_buf + compress_offset, bound - compress_offset,
