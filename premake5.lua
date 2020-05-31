@@ -28,6 +28,7 @@ workspace "sp-tools"
 
 	filter { "system:linux" }
 		linkoptions "-pthread"
+		toolset "clang"
 
 	if cppdialect ~= nil then
 		cppdialect "C++14"
