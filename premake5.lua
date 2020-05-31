@@ -25,16 +25,12 @@ workspace "sp-tools"
 	staticruntime "on"
 	exceptionhandling "Off"
 	rtti "Off"
+	cppdialect "C++14"
+	flags { "C++14" }
 
 	filter { "system:linux" }
 		linkoptions "-pthread"
 		toolset "clang"
-
-	if cppdialect ~= nil then
-		cppdialect "C++14"
-	else
-		flags { "C++14" }
-	end
 
 	filter "action:vs*"
 		systemversion(os.winSdkVersion() .. ".0")
