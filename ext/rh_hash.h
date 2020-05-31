@@ -28,7 +28,8 @@ static RHMAP_FORCEINLINE uint32_t hash(int32_t v) { return hash((uint32_t)v); }
 static RHMAP_FORCEINLINE uint32_t hash(int64_t v) { return hash((uint64_t)v); }
 static RHMAP_FORCEINLINE uint32_t hash(float v) { uint32_t u; memcpy(&u, &v, sizeof(float)); return hash(u); }
 static RHMAP_FORCEINLINE uint32_t hash(double v) { uint64_t u; memcpy(&u, &v, sizeof(double)); return hash(u); }
-static RHMAP_FORCEINLINE uint32_t hash(void *v) { return hash((uintptr_t)v); }
+static RHMAP_FORCEINLINE uint32_t hash(void *v) { return sizeof(void*) == sizeof(uint32_t)
+	? hash((uint32_t)(uintptr_t)v) : hash((uint64_t)(uintptr_t)v); }
 
 #if 0
 template <typename T>
