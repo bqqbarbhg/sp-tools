@@ -4,7 +4,7 @@
 
 void premultiply_alpha(uint8_t *data, int width, int height)
 {
-	size_t num_pixels = (size_t)width * (size_t)width;
+	size_t num_pixels = (size_t)width * (size_t)height;
 	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
 		unsigned a = p[3];
 		p[0] = (uint8_t)((unsigned)p[0] * a / 255);
@@ -15,7 +15,7 @@ void premultiply_alpha(uint8_t *data, int width, int height)
 
 void swizzle_rg_to_ga(uint8_t *data, int width, int height)
 {
-	size_t num_pixels = (size_t)width * (size_t)width;
+	size_t num_pixels = (size_t)width * (size_t)height;
 	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
 		p[3] = p[1];
 		p[1] = p[0];
@@ -26,7 +26,7 @@ void swizzle_rg_to_ga(uint8_t *data, int width, int height)
 
 void insert_channel(uint8_t *data, const uint8_t *chan_data, int chan, int width, int height)
 {
-	size_t num_pixels = (size_t)width * (size_t)width;
+	size_t num_pixels = (size_t)width * (size_t)height;
 	const uint8_t *s = chan_data;
 	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
 		p[chan] = *s++;
