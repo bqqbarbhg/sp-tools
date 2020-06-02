@@ -29,7 +29,7 @@ workspace "sp-tools"
 	cppdialect "C++14"
 
 	-- WTF: cppdialect seems broken on macOS
-	if os.get() == "macosx" then
+	if os.host() == "macosx" then
 		flags { "C++14" }
 	end
 
