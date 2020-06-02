@@ -25,8 +25,13 @@ workspace "sp-tools"
 	staticruntime "on"
 	exceptionhandling "Off"
 	rtti "Off"
+
 	cppdialect "C++14"
-	flags { "C++14" }
+
+	-- WTF: cppdialect seems broken on macOS
+	if os.get() == "macosx" then
+		flags { "C++14" }
+	end
 
 	filter { "system:linux" }
 		linkoptions "-pthread"
