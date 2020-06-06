@@ -145,6 +145,7 @@ struct mesh_data_format
 	uint32_t weights_per_vertex = 0;
 	uint32_t vertex_size_in_floats = 0;
 	uint32_t position_offset_in_floats = ~0u;
+	uint32_t position_attrib_index = ~0u;
 	uint8_t attrib_size_in_floats[SPMDL_MAX_VERTEX_ATTRIBS] = { };
 };
 
@@ -230,6 +231,7 @@ mesh_data_format create_mesh_data_format(const vertex_format &format)
 		switch (attrib.attrib) {
 		case SP_VERTEX_ATTRIB_POSITION:
 			fmt.position_offset_in_floats = fmt.vertex_size_in_floats;
+			fmt.position_attrib_index = i;
 			attrib_size_in_floats = 3;
 			break;
 		case SP_VERTEX_ATTRIB_NORMAL: attrib_size_in_floats = 3; break;
@@ -2276,6 +2278,14 @@ int main(int argc, char **argv)
 			sp_mesh.num_vertex_buffers = part.format.num_streams;
 			sp_mesh.num_indices = (uint32_t)part.num_indices;
 			sp_mesh.num_vertices = (uint32_t)part.num_vertices;
+
+			attrib_bounds bounds = get_attrib_bounds(part, part.data_format.position_attrib_index);
+			sp_mesh.aabb_min.x = bounds.min[0];
+			sp_mesh.aabb_min.y = bounds.min[1];
+			sp_mesh.aabb_min.z = bounds.min[2];
+			sp_mesh.aabb_max.x = bounds.max[0];
+			sp_mesh.aabb_max.y = bounds.max[1];
+			sp_mesh.aabb_max.z = bounds.max[2];
 
 			if (part.bones.size() > 0) {
 				sp_mesh.bone_offset = (uint32_t)sp_bones.size();
