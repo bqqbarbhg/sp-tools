@@ -389,6 +389,7 @@ int main(int argc, char **argv)
 	bool show_help = argc <= 1;
 	bool crop_alpha = false;
 	bool premultiply = false;
+	bool flip_y = false;
 	bool output_ignores_alpha = false;
 	bool normal_map = false;
 	bool decorrelate_remap = false;
@@ -421,6 +422,8 @@ int main(int argc, char **argv)
 			res_opts.linear = true;
 		} else if (!strcmp(arg, "--premultiply")) {
 			premultiply = true;
+		} else if (!strcmp(arg, "--flip-y")) {
+			flip_y = true;
 		} else if (!strcmp(arg, "--no-mips")) {
 			max_mips = 1;
 		} else if (!strcmp(arg, "--output-ignores-alpha")) {
@@ -502,6 +505,7 @@ int main(int argc, char **argv)
 			"    --crop-alpha: Crop the transparent areas around the image\n"
 			"    --linear: Treat the data as linear instead of sRGB\n"
 			"    --premultiply: Premultiply the input RGB by alpha\n"
+			"    --flip-y: Mirror the input image vertically\n"
 			"    --edge <mode>: Edge addressing mode (clamp, reflect, wrap, zero)\n"
 			"    --edge-h <mode>: Horizontal edge addressing mode (clamp, reflect, wrap, zero)\n"
 			"    --edge-v <mode>: Vertical edge addressing mode (clamp, reflect, wrap, zero)\n"
@@ -584,6 +588,7 @@ int main(int argc, char **argv)
 		printf("crop_alpha: %s\n", crop_alpha ? "true" : "false");
 		printf("linear: %s\n", res_opts.linear ? "true" : "false");
 		printf("premultiply: %s\n", premultiply ? "true" : "false");
+		printf("flip_y: %s\n", flip_y ? "true" : "false");
 		printf("edge_h: %s\n", edge_list[res_opts.edge_h].name);
 		printf("edge_v: %s\n", edge_list[res_opts.edge_v].name);
 		printf("filter: %s\n", filter_list[res_opts.filter].name);
@@ -595,6 +600,10 @@ int main(int argc, char **argv)
 
 	int input_width = 0, input_height = 0;
 	uint8_t *pixels = NULL;
+
+	if (flip_y) {
+		stbi_set_flip_vertically_on_load_thread(1);
+	}
 	
 	if (input_file) {
 		pixels = (uint8_t*)stbi_load(input_file, &input_width, &input_height, NULL, 4);
