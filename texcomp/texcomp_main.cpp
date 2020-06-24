@@ -400,6 +400,7 @@ int main(int argc, char **argv)
 	resize_opts res_opts = { STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT };
 	rgbcx::bc1_approx_mode bc1_approx = rgbcx::bc1_approx_mode::cBC1Ideal;
 	container_enum container = CONTAINER_ERROR;
+	bool invert_channels[4] = { };
 
 	res_opts.channels = 4;
 	res_opts.alpha_channel = 3;
@@ -433,6 +434,14 @@ int main(int argc, char **argv)
 			res_opts.linear = true;
 		} else if (!strcmp(arg, "--decorrelate-remap")) {
 			decorrelate_remap = true;
+		} else if (!strcmp(arg, "--invert-r")) {
+			invert_channels[0] = true;
+		} else if (!strcmp(arg, "--invert-g")) {
+			invert_channels[1] = true;
+		} else if (!strcmp(arg, "--invert-b")) {
+			invert_channels[2] = true;
+		} else if (!strcmp(arg, "--invert-a")) {
+			invert_channels[3] = true;
 		} else if (left >= 1) {
 			if (left >= 2 && !strcmp(arg, "--resolution")) {
 				res_width = atoi(argv[++argi]);
@@ -496,6 +505,7 @@ int main(int argc, char **argv)
 			"    -v / --verbose: Verbose output\n"
 			"    -l / --level <level>: Compression level 1-20 (default 10)\n"
 			"    --input-(rgba) <path>: Set/override input channels from single channel files\n"
+			"    --invert-(rgba): Invert channels\n"
 			"    --max-extent <extent>: Clamp the resolution of the image in pixels\n"
 			"                  Maintains aspect ratio.\n"
 			"    --resolution <width> <height>: Force output resolution to a specific size\n"
@@ -635,6 +645,16 @@ int main(int argc, char **argv)
 	}
 
 	// -- Premultiply input data if necessary
+
+	for (uint32_t channel = 0; channel < 4; channel++) {
+		if (invert_channels[channel]) {
+			if (verbose) {
+				printf("Inverting channel '%c' (--invert-%c)\n", "RGBA"[channel], "rgba"[channel]);
+			}
+
+			invert_channel(pixels + channel, input_width, input_height);
+		}
+	}
 
 	if (premultiply) {
 		if (verbose) {

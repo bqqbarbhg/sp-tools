@@ -13,6 +13,14 @@ void premultiply_alpha(uint8_t *data, int width, int height)
 	}
 }
 
+void invert_channel(uint8_t *data, int width, int height)
+{
+	size_t num_pixels = (size_t)width * (size_t)height;
+	for (uint8_t *p = data, *e = p + num_pixels*4; p != e; p += 4) {
+		p[0] = 255 - p[0];
+	}
+}
+
 void swizzle_rg_to_ga(uint8_t *data, int width, int height)
 {
 	size_t num_pixels = (size_t)width * (size_t)height;
