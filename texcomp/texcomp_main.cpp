@@ -393,6 +393,7 @@ int main(int argc, char **argv)
 	bool output_ignores_alpha = false;
 	bool normal_map = false;
 	bool decorrelate_remap = false;
+	bool dds_d3d9 = false;
 	int res_width = -1;
 	int res_height = -1;
 	int level = 10;
@@ -434,6 +435,8 @@ int main(int argc, char **argv)
 			res_opts.linear = true;
 		} else if (!strcmp(arg, "--decorrelate-remap")) {
 			decorrelate_remap = true;
+		} else if (!strcmp(arg, "--dds-d3d9")) {
+			dds_d3d9 = true;
 		} else if (!strcmp(arg, "--invert-r")) {
 			invert_channels[0] = true;
 		} else if (!strcmp(arg, "--invert-g")) {
@@ -525,6 +528,7 @@ int main(int argc, char **argv)
 			"    --normal-map: Optimize the content as a tangent-space normal map in RG\n"
 			"    --decorrelate-remap: Remap RG to GA (other channels will be undefined)\n"
 			"                         This helps decorrelating the channels in BC3 and ASTC\n"
+			"    --dds-d3d9: Export Direct3D 9 compatible .dds files\n"
 		);
 
 		printf("Supported formats:\n");
@@ -1076,7 +1080,7 @@ int main(int argc, char **argv)
 		header.height = (uint32_t)input_height;
 		header.width = (uint32_t)input_width;
 		header.pitch_or_linear_size = (uint32_t)mips[0].data_size;
-		header.depth = 0;
+		header.depth = 1;
 		header.mip_map_count = (uint32_t)num_mips;
 		if (format == FORMAT_RGBA8) {
 			header.pixelformat_flags = 0x41; // RGB|ALPHAPIXELS
@@ -1089,20 +1093,40 @@ int main(int argc, char **argv)
 			header.pixelformat_flags = 0x4; // FOURCC
 		}
 		header.pixelformat_size = 32;
-		memcpy(header.pixelformat_fourcc, "DX10", 4);
-		switch (format) {
-		case FORMAT_RGBA8: header.dxgi_format = res_opts.linear ? 28 : 29; break; // R8G8B8A8_UNORM(_SRGB)
-		case FORMAT_BC1: header.dxgi_format = res_opts.linear ? 71 : 72; break; // BC1_UNORM(_SRGB)
-		case FORMAT_BC3: header.dxgi_format = res_opts.linear ? 77 : 78; break; // BC3_UNORM(_SRGB)
-		case FORMAT_BC4: header.dxgi_format = 80; break; // BC4_UNORM
-		case FORMAT_BC5: header.dxgi_format = 83; break; // BC5_UNORM TODO: snorm?
-		case FORMAT_BC7: header.dxgi_format = res_opts.linear ? 98 : 99; break; // BC7_UNORM(_SRGB)
-		default: header.dxgi_format = 0; break;
+		header.caps[0] = 0x1000; // TEXTURE
+		if (num_mips > 1) {
+			header.caps[0] |= 0x400008; // COMPLEX|MIPMAP
 		}
-		header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
-		header.array_size = 1;
 
-		write_data(f, &header, sizeof(header));
+		if (dds_d3d9) {
+			switch (format) {
+			case FORMAT_BC1: memcpy(header.pixelformat_fourcc, "DXT1", 4); break;
+			case FORMAT_BC3: memcpy(header.pixelformat_fourcc, "DXT5", 4); break;
+			case FORMAT_BC4: memcpy(header.pixelformat_fourcc, "BC4U", 4); break;
+			case FORMAT_BC5: memcpy(header.pixelformat_fourcc, "BC5U", 4); break;
+			default: /* Just ignore unsupported formats for now */ break;
+			}
+		} else {
+			memcpy(header.pixelformat_fourcc, "DX10", 4);
+			switch (format) {
+			case FORMAT_RGBA8: header.dxgi_format = res_opts.linear ? 28 : 29; break; // R8G8B8A8_UNORM(_SRGB)
+			case FORMAT_BC1: header.dxgi_format = res_opts.linear ? 71 : 72; break; // BC1_UNORM(_SRGB)
+			case FORMAT_BC3: header.dxgi_format = res_opts.linear ? 77 : 78; break; // BC3_UNORM(_SRGB)
+			case FORMAT_BC4: header.dxgi_format = 80; break; // BC4_UNORM
+			case FORMAT_BC5: header.dxgi_format = 83; break; // BC5_UNORM TODO: snorm?
+			case FORMAT_BC7: header.dxgi_format = res_opts.linear ? 98 : 99; break; // BC7_UNORM(_SRGB)
+			default: header.dxgi_format = 0; break;
+			}
+			header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
+			header.array_size = 1;
+		}
+
+		if (dds_d3d9) {
+			write_data(f, &header, 4 + 124);
+		} else {
+			write_data(f, &header, sizeof(header));
+		}
+
 		write_mips(f, mips, num_mips);
 
 	} break;
