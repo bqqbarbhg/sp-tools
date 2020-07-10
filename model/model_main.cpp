@@ -2254,9 +2254,11 @@ int main(int argc, char **argv)
 
 		rh::array<spmdl_node> sp_nodes;
 		rh::array<spmdl_bone> sp_bones;
+		rh::array<spmdl_material> sp_materials;
 		rh::array<spmdl_mesh> sp_meshes;
 		rh::array<char> sp_vertex;
 		rh::array<char> sp_index;
+		rh::hash_map<ufbx_material*, uint32_t> material_map;
 
 		sp_nodes.reserve(model.nodes.size());
 		sp_meshes.reserve(parts.size());
@@ -2327,6 +2329,21 @@ int main(int argc, char **argv)
 			memcpy(sp_mesh.attribs, part.format.attribs, sizeof(sp_mesh.attribs));
 
 			sp_meshes.push_back(std::move(sp_mesh));
+
+			{
+				auto &res = material_map.insert({ part.material, (uint32_t)sp_materials.size() });
+				if (res.inserted) {
+					ufbx_material *material = part.material;
+					spmdl_material sp_material;
+					if (material) {
+						sp_material.name = str_pool.insert(material->name);
+					} else {
+						sp_material.name = str_pool.insert("");
+					}
+					sp_materials.push_back(std::move(sp_material));
+				}
+			}
+
 		}
 
 		spmdl_header header = { };
@@ -2336,13 +2353,15 @@ int main(int argc, char **argv)
 		header.header.version = 1;
 		header.info.num_nodes = (uint32_t)sp_nodes.size();
 		header.info.num_bones = (uint32_t)sp_bones.size();
+		header.info.num_maetrials = (uint32_t)sp_materials.size();
 		header.info.num_meshes = (uint32_t)sp_meshes.size();
 
-		compress_result c_nodes, c_bones, c_meshes, c_strings, c_vertex, c_index;
+		compress_result c_nodes, c_bones, c_materials, c_meshes, c_strings, c_vertex, c_index;
 
 		uint32_t offset = sizeof(header);
 		init_section(offset, header.s_nodes, c_nodes, sp_nodes.slice(), compress_opts, SPFILE_SECTION_NODES);
 		init_section(offset, header.s_bones, c_bones, sp_bones.slice(), compress_opts, SPFILE_SECTION_BONES);
+		init_section(offset, header.s_materials, c_materials, sp_materials.slice(), compress_opts, SPFILE_SECTION_MATERIALS);
 		init_section(offset, header.s_meshes, c_meshes, sp_meshes.slice(), compress_opts, SPFILE_SECTION_MESHES);
 		init_section(offset, header.s_strings, c_strings, str_pool.data.slice(), compress_opts, SPFILE_SECTION_STRINGS);
 		init_section(offset, header.s_vertex, c_vertex, sp_vertex.slice(), compress_opts, SPFILE_SECTION_VERTEX);
@@ -2354,6 +2373,7 @@ int main(int argc, char **argv)
 			write_pod(f, header);
 			write_pod(f, c_nodes.data.slice());
 			write_pod(f, c_bones.data.slice());
+			write_pod(f, c_materials.data.slice());
 			write_pod(f, c_meshes.data.slice());
 			write_pod(f, c_strings.data.slice());
 			write_pod(f, c_vertex.data.slice());

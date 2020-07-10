@@ -135,6 +135,7 @@ typedef enum spfile_section_magic {
 	SPFILE_SECTION_STRINGS   = 0x73727473, // 'strs'
 	SPFILE_SECTION_BONES     = 0x656e6f62, // 'bone'
 	SPFILE_SECTION_NODES     = 0x65646f6e, // 'node'
+	SPFILE_SECTION_MATERIALS = 0x7374616d, // 'mats'
 	SPFILE_SECTION_MESHES    = 0x6873656d, // 'mesh'
 	SPFILE_SECTION_VERTEX    = 0x78747276, // 'vrtx'
 	SPFILE_SECTION_INDEX     = 0x78646e69, // 'indx'
@@ -262,18 +263,20 @@ typedef struct spmdl_mesh
 typedef struct spmdl_info {
 	uint32_t num_nodes;
 	uint32_t num_bones;
+	uint32_t num_maetrials;
 	uint32_t num_meshes;
 } spmdl_info;
 
 typedef struct spmdl_header {
 	spfile_header header;
 	spmdl_info info;
-	spfile_section s_nodes;    // spmdl_node[info.num_nodes]
-	spfile_section s_bones;    // spmdl_bone[info.num_bones]
-	spfile_section s_meshes;   // spmdl_mesh[info.num_meshes]
-	spfile_section s_strings;  // char[uncompressed_size]
-	spfile_section s_vertex;   // char[uncompressed_size]
-	spfile_section s_index;    // char[uncompressed_size]
+	spfile_section s_nodes;     // spmdl_node[info.num_nodes]
+	spfile_section s_bones;     // spmdl_bone[info.num_bones]
+	spfile_section s_materials; // spmdl_material[info.num_materials]
+	spfile_section s_meshes;    // spmdl_mesh[info.num_meshes]
+	spfile_section s_strings;   // char[uncompressed_size]
+	spfile_section s_vertex;    // char[uncompressed_size]
+	spfile_section s_index;     // char[uncompressed_size]
 } spmdl_header;
 
 typedef struct sptex_mip {
