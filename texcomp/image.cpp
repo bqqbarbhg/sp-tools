@@ -21,6 +21,42 @@ void invert_channel(uint8_t *data, int width, int height)
 	}
 }
 
+void move_x(uint8_t *data, int width, int height, int amount)
+{
+	for (int y = 0; y < height; y++) {
+		uint8_t *p = data + y * width * 4;
+		for (int ix = 0; ix < width; ix++) {
+			int x = ix;
+			if (amount < 0) x = width - x - 1;
+
+			int dx = x + amount;
+			if (dx < 0) dx = 0;
+			if (dx >= width - 1) dx = width - 1;
+			p[x*4 + 0] = p[dx*4 + 0];
+			p[x*4 + 1] = p[dx*4 + 1];
+			p[x*4 + 2] = p[dx*4 + 2];
+			p[x*4 + 3] = p[dx*4 + 3];
+		}
+	}
+}
+
+void move_y(uint8_t *data, int width, int height, int amount)
+{
+	for (int iy = 0; iy < height; iy++) {
+		int y = iy;
+		if (amount < 0) y = height - y - 1;
+
+		int dy = y + amount;
+		if (dy < 0) dy = 0;
+		if (dy >= height - 1) dy = height - 1;
+		if (dy != y) {
+			uint8_t *p = data + y * width * 4;
+			uint8_t *dp = data + dy * width * 4;
+			memcpy(p, dp, width * 4);
+		}
+	}
+}
+
 void swizzle_rg_to_ga(uint8_t *data, int width, int height)
 {
 	size_t num_pixels = (size_t)width * (size_t)height;

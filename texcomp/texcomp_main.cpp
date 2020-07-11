@@ -396,6 +396,8 @@ int main(int argc, char **argv)
 	bool dds_d3d9 = false;
 	int res_width = -1;
 	int res_height = -1;
+	int offset_x = 0;
+	int offset_y = 0;
 	int level = 10;
 	int num_threads = 1;
 	resize_opts res_opts = { STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT };
@@ -449,6 +451,9 @@ int main(int argc, char **argv)
 			if (left >= 2 && !strcmp(arg, "--resolution")) {
 				res_width = atoi(argv[++argi]);
 				res_height = atoi(argv[++argi]);
+			} else if (left >= 2 && !strcmp(arg, "--offset")) {
+				offset_x = atoi(argv[++argi]);
+				offset_y = atoi(argv[++argi]);
 			} else if (!strcmp(arg, "-i") || !strcmp(arg, "--input")) {
 				input_file = argv[++argi];
 			} else if (!strcmp(arg, "--input-r")) {
@@ -512,7 +517,7 @@ int main(int argc, char **argv)
 			"    --max-extent <extent>: Clamp the resolution of the image in pixels\n"
 			"                  Maintains aspect ratio.\n"
 			"    --resolution <width> <height>: Force output resolution to a specific size\n"
-			"                          Will resize the image larger if necessary\n"
+			"    --offset <x> <y>: Offset the input image in pixels, clamps edge pixels\n"
 			"    --max-mips <num>: Maximum number of mipmaps to generate\n"
 			"    --no-mips: Don't generate mipmap levels, equivalent to `--max-mips 1`\n"
 			"    --crop-alpha: Crop the transparent areas around the image\n"
@@ -646,6 +651,15 @@ int main(int argc, char **argv)
 
 		if (chan_width[i] > max_chan_width) max_chan_width = chan_width[i];
 		if (chan_height[i] > max_chan_height) max_chan_height = chan_height[i];
+	}
+
+	// -- Offset data
+
+	if (offset_x != 0) {
+		move_x(pixels, input_width, input_height, -offset_x);
+	}
+	if (offset_y != 0) {
+		move_y(pixels, input_width, input_height, -offset_y);
 	}
 
 	// -- Premultiply input data if necessary
