@@ -2329,7 +2329,7 @@ int main(int argc, char **argv)
 			memcpy(sp_mesh.attribs, part.format.attribs, sizeof(sp_mesh.attribs));
 
 			{
-				auto &res = material_map.insert({ part.material, (uint32_t)sp_materials.size() });
+				auto res = material_map.insert({ part.material, (uint32_t)sp_materials.size() });
 				sp_mesh.material = res.entry->value;
 				if (res.inserted) {
 					ufbx_material *material = part.material;
