@@ -2328,10 +2328,9 @@ int main(int argc, char **argv)
 
 			memcpy(sp_mesh.attribs, part.format.attribs, sizeof(sp_mesh.attribs));
 
-			sp_meshes.push_back(std::move(sp_mesh));
-
 			{
 				auto &res = material_map.insert({ part.material, (uint32_t)sp_materials.size() });
+				sp_mesh.material = res.entry->value;
 				if (res.inserted) {
 					ufbx_material *material = part.material;
 					spmdl_material sp_material;
@@ -2344,6 +2343,7 @@ int main(int argc, char **argv)
 				}
 			}
 
+			sp_meshes.push_back(std::move(sp_mesh));
 		}
 
 		spmdl_header header = { };
