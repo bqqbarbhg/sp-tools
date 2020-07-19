@@ -340,6 +340,60 @@ static void write_mips(FILE *f, const mip_data *mips, int num_mips)
 	}
 }
 
+typedef struct {
+	const char *name;
+	char value[128];
+} expand_var;
+
+typedef struct {
+	const char *name;
+	const char *description;
+} var_info;
+
+static size_t expand_name(char *dst, size_t dst_size, const char *pattern, const expand_var *vars, size_t num_vars)
+{
+	size_t dst_len = 0;
+	for (const char *p = pattern; *p; p++) {
+		size_t left = dst_size - dst_len - 1;
+		if (left == 0) break;
+
+		char c = *p;
+		if (c == ':') {
+			const char *begin = ++p;
+			while (*p && *p != ':') {
+				p++;
+			}
+			if (*p == ':') {
+				size_t len = p - begin;
+				for (size_t i = 0; i < num_vars; i++) {
+					if (strlen(vars[i].name) == len && !memcmp(vars[i].name, begin, len)) {
+						size_t copy_len = strlen(vars[i].value);
+						if (copy_len > left) copy_len = left;
+						memcpy(dst + dst_len, vars[i].value, copy_len);
+						dst_len += copy_len;
+						break;
+					}
+				}
+			}
+		} else {
+			dst[dst_len++] = c;
+		}
+	}
+	dst[dst_len] = '\0';
+	return dst_len;
+}
+
+static void push_var(expand_var *p_var, const char *name, const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+
+	p_var->name = name;
+	vsnprintf(p_var->value, sizeof(p_var->value), fmt, args);
+
+	va_end(args);
+}
+
 typedef struct dds_header {
 	char magic[4];
 	uint32_t size;
@@ -400,6 +454,7 @@ int main(int argc, char **argv)
 	int offset_y = 0;
 	int level = 10;
 	int num_threads = 1;
+	int mip_drop_copies = 0;
 	resize_opts res_opts = { STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT };
 	rgbcx::bc1_approx_mode bc1_approx = rgbcx::bc1_approx_mode::cBC1Ideal;
 	container_enum container = CONTAINER_ERROR;
@@ -498,6 +553,9 @@ int main(int argc, char **argv)
 			} else if (!strcmp(arg, "-j") || !strcmp(arg, "--threads")) {
 				num_threads = atoi(argv[++argi]);
 				if (num_threads <= 0 || num_threads > 10000) failf("Bad number of threads: %d");
+			} else if (!strcmp(arg, "--mip-drop-copies")) {
+				mip_drop_copies = atoi(argv[++argi]);
+				if (mip_drop_copies < 0 || mip_drop_copies > 128) failf("Bad mip drop copies: %d", mip_drop_copies);
 			}
 		}
 	}
@@ -506,7 +564,7 @@ int main(int argc, char **argv)
 		printf("%s",
 			"Usage: sf-texcomp -i <input> -o <output> -f <format> [options]\n"
 			"    -i / --input <path>: Input filename in any format stb_image supports\n"
-			"    -o / --output <path>: Destination filename\n"
+			"    -o / --output <path>: Destination filename (use :pattern: to substitute variables (see below)\n"
 			"    -f / --format <format>: Compressed texture pixel format (see below)\n"
 			"    -c / --container <type>: Output container format (detected from filename if absent, see below)\n"
 			"    -j / --threads <num>: Number of threads to use\n"
@@ -534,6 +592,7 @@ int main(int argc, char **argv)
 			"    --decorrelate-remap: Remap RG to GA (other channels will be undefined)\n"
 			"                         This helps decorrelating the channels in BC3 and ASTC\n"
 			"    --dds-d3d9: Export Direct3D 9 compatible .dds files\n"
+			"    --mip-drop-copies <n>: Export copies with mips dropped up to <n> mips\n"
 		);
 
 		printf("Supported formats:\n");
@@ -550,6 +609,16 @@ int main(int argc, char **argv)
 			} else {
 				printf("  %8s: %s\n", type->name, type->description);
 			}
+		}
+
+		var_info pattern_info[] = {
+			{ "width", "Width of the top-level mip" },
+			{ "height", "Height of the top-level mip" },
+		};
+		printf("Supported patterns:\n");
+		for (size_t i = 0; i < array_size(pattern_info); i++) {
+			const var_info *info = &pattern_info[i];
+			printf("  %8s: %s\n", info->name, info->description);
 		}
 
 		return 0;
@@ -809,8 +878,8 @@ int main(int argc, char **argv)
 	assert(fmt.format == format);
 
 	int mip_width = input_width, mip_height = input_height;
-	int num_mips = 0;
-	mip_data mips[32];
+	int num_real_mips = 0;
+	mip_data real_mips[32];
 
 	switch (format) {
 
@@ -833,8 +902,8 @@ int main(int argc, char **argv)
 	}
 
 	size_t mip_data_offset = 0;
-	while (max_mips <= 0 || num_mips < max_mips) {
-		int mip_ix = num_mips++;
+	while (max_mips <= 0 || num_real_mips < max_mips) {
+		int mip_ix = num_real_mips++;
 
 		uint8_t *mip_pixels;
 		if (mip_width != input_width || mip_height != input_height) {
@@ -853,7 +922,7 @@ int main(int argc, char **argv)
 			mip_pixels = pixels;
 		}
 
-		mip_data *mip = &mips[mip_ix];
+		mip_data *mip = &real_mips[mip_ix];
 		mip->width = mip_width;
 		mip->height = mip_height;
 		mip->blocks_x = (mip_width + fmt.block_width - 1) / fmt.block_width;
@@ -987,198 +1056,216 @@ int main(int argc, char **argv)
 	free(mip_resize_pixels);
 	free(pixels);
 
-	// TODO: Windows UTF-16
-	FILE *f = fopen(output_file, "wb");
-	if (!f) failf("Failed to open output file: %s", output_file);
+	static char output_expanded[4096];
 
-	switch (container) {
+	for (int mip_drop = 0; mip_drop <= mip_drop_copies; mip_drop++) {
 
-	case CONTAINER_NONE: {
-		write_mips(f, mips, num_mips);
-	} break;
+		if (mip_drop >= num_real_mips) break;
+		mip_data *mips = real_mips + mip_drop;
+		int num_mips = num_real_mips - mip_drop;
 
-	case CONTAINER_SPTEX: {
-		if (num_mips > 16) {
-			failf("sptex supports only up to 16 mip levels");
-		}
+		expand_var vars[2], *p_var = vars;
+		push_var(p_var++, "width", "%d", mips[0].width);
+		push_var(p_var++, "height", "%d", mips[0].height);
+		size_t num_vars = p_var - vars;
+		assert(num_vars <= array_size(vars));
 
-		sp_compression_type compression_type = SP_COMPRESSION_ZSTD;
-		size_t bound = 0;
-		for (int i = 0; i < num_mips; i++) {
-			// Padding
-			bound += 16;
+		expand_name(output_expanded, sizeof(output_expanded), output_file, vars, num_vars);
 
-			bound += sp_get_compression_bound(compression_type, mips[i].data_size);
-		}
-		char *compress_buf = (char*)malloc(bound);
-		if (!compress_buf) failf("Failed to allocate lossless compression buffer");
+		// TODO: Windows UTF-16
+		FILE *f = fopen(output_expanded, "wb");
+		if (!f) failf("Failed to open output file: %s", output_expanded);
 
-		sptex_header header;
-		header.header.magic = SPFILE_HEADER_SPTEX;
-		header.header.version = 1;
-		header.header.header_info_size = sizeof(sptex_info);
-		header.header.num_sections = num_mips;
-		header.info.format = res_opts.linear ? fmt.sp_linear : fmt.sp_srgb;
-		header.info.width = (uint16_t)input_width;
-		header.info.height = (uint16_t)input_height;
-		header.info.uncropped_width = (uint16_t)uncropped_width;
-		header.info.uncropped_height = (uint16_t)uncropped_height;
-		header.info.crop_min_x = (uint16_t)input_rect.min_x;
-		header.info.crop_min_y = (uint16_t)input_rect.min_y;
-		header.info.crop_max_x = (uint16_t)input_rect.max_x;
-		header.info.crop_max_y = (uint16_t)input_rect.max_y;
-		header.info.num_mips = num_mips;
+		switch (container) {
 
-		uint32_t header_size = sizeof(spfile_header) + sizeof(sptex_info) + sizeof(spfile_section) * num_mips;
-		size_t compress_offset = 0;
+		case CONTAINER_NONE: {
+			write_mips(f, mips, num_mips);
+		} break;
 
-		for (int i = 0; i < num_mips; i++) {
-			while ((compress_offset + header_size) % 16 != 0) {
-				compress_offset++;
-				compress_buf[compress_offset] = '\0';
+		case CONTAINER_SPTEX: {
+			if (num_mips > 16) {
+				failf("sptex supports only up to 16 mip levels");
 			}
 
-			spfile_section *s_mip = &header.s_mips[i];
-			size_t compressed_size = sp_compress_buffer(compression_type,
-				compress_buf + compress_offset, bound - compress_offset,
-				mips[i].data, mips[i].data_size, level);
+			sp_compression_type compression_type = SP_COMPRESSION_ZSTD;
+			size_t bound = 0;
+			for (int i = 0; i < num_mips; i++) {
+				// Padding
+				bound += 16;
 
-			double no_compress_ratio = 1.05;
-			sp_compression_type mip_type = compression_type;
-			if ((double)mips[i].data_size / (double)compressed_size < no_compress_ratio) {
-				mip_type = SP_COMPRESSION_NONE;
-				memcpy(compress_buf + compress_offset, mips[i].data, mips[i].data_size);
-				compressed_size = mips[i].data_size;
+				bound += sp_get_compression_bound(compression_type, mips[i].data_size);
 			}
+			char *compress_buf = (char*)malloc(bound);
+			if (!compress_buf) failf("Failed to allocate lossless compression buffer");
 
-			if (verbose) {
-				if (mips[i].data_size > 1000) {
-					printf("Compressed mip %u from %.1fkB to %.1fkB, ratio %.2f\n",
-						i, (double)mips[i].data_size / 1000.0, (double)compressed_size / 1000.0,
-						(double)mips[i].data_size / (double)compressed_size);
-				} else {
-					printf("Compressed mip %d from %zub to %zub, ratio %.2f\n",
-						i, mips[i].data_size, compressed_size,
-						(double)mips[i].data_size / (double)compressed_size);
+			sptex_header header;
+			header.header.magic = SPFILE_HEADER_SPTEX;
+			header.header.version = 1;
+			header.header.header_info_size = sizeof(sptex_info);
+			header.header.num_sections = num_mips;
+			header.info.format = res_opts.linear ? fmt.sp_linear : fmt.sp_srgb;
+			header.info.width = (uint16_t)mips[0].width;
+			header.info.height = (uint16_t)mips[0].height;
+			header.info.uncropped_width = (uint16_t)(uncropped_width >> mip_drop);
+			header.info.uncropped_height = (uint16_t)(uncropped_height >> mip_drop);
+			header.info.crop_min_x = (uint16_t)input_rect.min_x;
+			header.info.crop_min_y = (uint16_t)input_rect.min_y;
+			header.info.crop_max_x = (uint16_t)input_rect.max_x;
+			header.info.crop_max_y = (uint16_t)input_rect.max_y;
+			header.info.num_mips = num_mips;
+
+			uint32_t header_size = sizeof(spfile_header) + sizeof(sptex_info) + sizeof(spfile_section) * num_mips;
+			size_t compress_offset = 0;
+
+			for (int i = 0; i < num_mips; i++) {
+				while ((compress_offset + header_size) % 16 != 0) {
+					compress_offset++;
+					compress_buf[compress_offset] = '\0';
 				}
+
+				spfile_section *s_mip = &header.s_mips[i];
+				size_t compressed_size = sp_compress_buffer(compression_type,
+					compress_buf + compress_offset, bound - compress_offset,
+					mips[i].data, mips[i].data_size, level);
+
+				double no_compress_ratio = 1.05;
+				sp_compression_type mip_type = compression_type;
+				if ((double)mips[i].data_size / (double)compressed_size < no_compress_ratio) {
+					mip_type = SP_COMPRESSION_NONE;
+					memcpy(compress_buf + compress_offset, mips[i].data, mips[i].data_size);
+					compressed_size = mips[i].data_size;
+				}
+
+				if (verbose) {
+					if (mips[i].data_size > 1000) {
+						printf("Compressed mip %u from %.1fkB to %.1fkB, ratio %.2f\n",
+							i, (double)mips[i].data_size / 1000.0, (double)compressed_size / 1000.0,
+							(double)mips[i].data_size / (double)compressed_size);
+					} else {
+						printf("Compressed mip %d from %zub to %zub, ratio %.2f\n",
+							i, mips[i].data_size, compressed_size,
+							(double)mips[i].data_size / (double)compressed_size);
+					}
+				}
+
+				s_mip->magic = SPFILE_SECTION_MIP;
+				s_mip->index = i;
+				s_mip->compression_type = mip_type;
+				s_mip->uncompressed_size = (uint32_t)mips[i].data_size;
+				s_mip->compressed_size = (uint32_t)compressed_size;
+				s_mip->offset = (uint32_t)compress_offset + header_size;
+
+				compress_offset += compressed_size;
 			}
 
-			s_mip->magic = SPFILE_SECTION_MIP;
-			s_mip->index = i;
-			s_mip->compression_type = mip_type;
-			s_mip->uncompressed_size = (uint32_t)mips[i].data_size;
-			s_mip->compressed_size = (uint32_t)compressed_size;
-			s_mip->offset = (uint32_t)compress_offset + header_size;
+			write_data(f, &header, header_size);
+			write_data(f, compress_buf, compress_offset);
 
-			compress_offset += compressed_size;
-		}
-
-		write_data(f, &header, header_size);
-		write_data(f, compress_buf, compress_offset);
-
-		if (compress_offset + header_size < sizeof(sptex_header)) {
-			char zero_buf[sizeof(sptex_header)] = { };
-			write_data(f, zero_buf, sizeof(sptex_header) - (compress_offset + header_size));
-		}
-
-		free(compress_buf);
-
-	} break;
-
-	case CONTAINER_DDS: {
-
-		dds_header header = { 0 };
-		memcpy(header.magic, "DDS ", 4);
-		header.size = 124;
-		header.flags = 0xa1007; // CAPS|HEIGHT|WIDTH|PIXELFORMAT|MIPMAPCOUNT|LINEARSIZE
-		header.height = (uint32_t)input_height;
-		header.width = (uint32_t)input_width;
-		header.pitch_or_linear_size = (uint32_t)mips[0].data_size;
-		header.depth = 1;
-		header.mip_map_count = (uint32_t)num_mips;
-		if (format == FORMAT_RGBA8) {
-			header.pixelformat_flags = 0x41; // RGB|ALPHAPIXELS
-			header.pixelformat_bitcount = 32;
-			header.pixelformat_r_mask = 0x000000ff;
-			header.pixelformat_g_mask = 0x0000ff00;
-			header.pixelformat_b_mask = 0x00ff0000;
-			header.pixelformat_a_mask = 0xff000000;
-		} else {
-			header.pixelformat_flags = 0x4; // FOURCC
-		}
-		header.pixelformat_size = 32;
-		header.caps[0] = 0x1000; // TEXTURE
-		if (num_mips > 1) {
-			header.caps[0] |= 0x400008; // COMPLEX|MIPMAP
-		}
-
-		if (dds_d3d9) {
-			switch (format) {
-			case FORMAT_BC1: memcpy(header.pixelformat_fourcc, "DXT1", 4); break;
-			case FORMAT_BC3: memcpy(header.pixelformat_fourcc, "DXT5", 4); break;
-			case FORMAT_BC4: memcpy(header.pixelformat_fourcc, "BC4U", 4); break;
-			case FORMAT_BC5: memcpy(header.pixelformat_fourcc, "BC5U", 4); break;
-			default: /* Just ignore unsupported formats for now */ break;
+			if (compress_offset + header_size < sizeof(sptex_header)) {
+				char zero_buf[sizeof(sptex_header)] = { };
+				write_data(f, zero_buf, sizeof(sptex_header) - (compress_offset + header_size));
 			}
-		} else {
-			memcpy(header.pixelformat_fourcc, "DX10", 4);
-			switch (format) {
-			case FORMAT_RGBA8: header.dxgi_format = res_opts.linear ? 28 : 29; break; // R8G8B8A8_UNORM(_SRGB)
-			case FORMAT_BC1: header.dxgi_format = res_opts.linear ? 71 : 72; break; // BC1_UNORM(_SRGB)
-			case FORMAT_BC3: header.dxgi_format = res_opts.linear ? 77 : 78; break; // BC3_UNORM(_SRGB)
-			case FORMAT_BC4: header.dxgi_format = 80; break; // BC4_UNORM
-			case FORMAT_BC5: header.dxgi_format = 83; break; // BC5_UNORM TODO: snorm?
-			case FORMAT_BC7: header.dxgi_format = res_opts.linear ? 98 : 99; break; // BC7_UNORM(_SRGB)
-			default: header.dxgi_format = 0; break;
-			}
-			header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
-			header.array_size = 1;
-		}
 
-		if (dds_d3d9) {
-			write_data(f, &header, 4 + 124);
-		} else {
+			free(compress_buf);
+
+		} break;
+
+		case CONTAINER_DDS: {
+
+			dds_header header = { 0 };
+			memcpy(header.magic, "DDS ", 4);
+			header.size = 124;
+			header.flags = 0xa1007; // CAPS|HEIGHT|WIDTH|PIXELFORMAT|MIPMAPCOUNT|LINEARSIZE
+			header.height = (uint32_t)mips[0].width;
+			header.width = (uint32_t)mips[0].height;
+			header.pitch_or_linear_size = (uint32_t)mips[0].data_size;
+			header.depth = 1;
+			header.mip_map_count = (uint32_t)num_mips;
+			if (format == FORMAT_RGBA8) {
+				header.pixelformat_flags = 0x41; // RGB|ALPHAPIXELS
+				header.pixelformat_bitcount = 32;
+				header.pixelformat_r_mask = 0x000000ff;
+				header.pixelformat_g_mask = 0x0000ff00;
+				header.pixelformat_b_mask = 0x00ff0000;
+				header.pixelformat_a_mask = 0xff000000;
+			} else {
+				header.pixelformat_flags = 0x4; // FOURCC
+			}
+			header.pixelformat_size = 32;
+			header.caps[0] = 0x1000; // TEXTURE
+			if (num_mips > 1) {
+				header.caps[0] |= 0x400008; // COMPLEX|MIPMAP
+			}
+
+			if (dds_d3d9) {
+				switch (format) {
+				case FORMAT_BC1: memcpy(header.pixelformat_fourcc, "DXT1", 4); break;
+				case FORMAT_BC3: memcpy(header.pixelformat_fourcc, "DXT5", 4); break;
+				case FORMAT_BC4: memcpy(header.pixelformat_fourcc, "BC4U", 4); break;
+				case FORMAT_BC5: memcpy(header.pixelformat_fourcc, "BC5U", 4); break;
+				default: /* Just ignore unsupported formats for now */ break;
+				}
+			} else {
+				memcpy(header.pixelformat_fourcc, "DX10", 4);
+				switch (format) {
+				case FORMAT_RGBA8: header.dxgi_format = res_opts.linear ? 28 : 29; break; // R8G8B8A8_UNORM(_SRGB)
+				case FORMAT_BC1: header.dxgi_format = res_opts.linear ? 71 : 72; break; // BC1_UNORM(_SRGB)
+				case FORMAT_BC3: header.dxgi_format = res_opts.linear ? 77 : 78; break; // BC3_UNORM(_SRGB)
+				case FORMAT_BC4: header.dxgi_format = 80; break; // BC4_UNORM
+				case FORMAT_BC5: header.dxgi_format = 83; break; // BC5_UNORM TODO: snorm?
+				case FORMAT_BC7: header.dxgi_format = res_opts.linear ? 98 : 99; break; // BC7_UNORM(_SRGB)
+				default: header.dxgi_format = 0; break;
+				}
+				header.resource_dimension = 3; // D3D10_RESOURCE_DIMENSION_TEXTURE2D
+				header.array_size = 1;
+			}
+
+			if (dds_d3d9) {
+				write_data(f, &header, 4 + 124);
+			} else {
+				write_data(f, &header, sizeof(header));
+			}
+
+			write_mips(f, mips, num_mips);
+
+		} break;
+
+		case CONTAINER_KTX: {
+			failf("Unimplemented");
+		} break;
+
+		case CONTAINER_ASTC: {
+
+			astc_header header;
+			memcpy(header.magic, "\x13\xAB\xA1\x5C", 4);
+			header.xdim = (uint8_t)fmt.block_width;
+			header.ydim = (uint8_t)fmt.block_height;
+			header.zdim = 1;
+			header.width[0] = (uint8_t)(mips[0].width & 0xff);
+			header.width[1] = (uint8_t)((mips[0].width >> 8) & 0xff);
+			header.width[2] = (uint8_t)((mips[0].width >> 16) & 0xff);
+			header.height[0] = (uint8_t)(mips[0].height & 0xff);
+			header.height[1] = (uint8_t)((mips[0].height >> 8) & 0xff);
+			header.height[2] = (uint8_t)((mips[0].height >> 16) & 0xff);
+			header.depth[0] = 1;
+			header.depth[1] = 0;
+			header.depth[2] = 0;
+
 			write_data(f, &header, sizeof(header));
+			write_mips(f, mips, num_mips);
+
+		} break;
+
 		}
 
-		write_mips(f, mips, num_mips);
-
-	} break;
-
-	case CONTAINER_KTX: {
-		failf("Unimplemented");
-	} break;
-
-	case CONTAINER_ASTC: {
-
-		astc_header header;
-		memcpy(header.magic, "\x13\xAB\xA1\x5C", 4);
-		header.xdim = (uint8_t)fmt.block_width;
-		header.ydim = (uint8_t)fmt.block_height;
-		header.zdim = 1;
-		header.width[0] = (uint8_t)(input_width & 0xff);
-		header.width[1] = (uint8_t)((input_width >> 8) & 0xff);
-		header.width[2] = (uint8_t)((input_width >> 16) & 0xff);
-		header.height[0] = (uint8_t)(input_width & 0xff);
-		header.height[1] = (uint8_t)((input_width >> 8) & 0xff);
-		header.height[2] = (uint8_t)((input_width >> 16) & 0xff);
-		header.depth[0] = 1;
-		header.depth[1] = 0;
-		header.depth[2] = 0;
-
-		write_data(f, &header, sizeof(header));
-		write_mips(f, mips, num_mips);
-
-	} break;
+		if (fclose(f) != 0) {
+			failf("Failed to flush output file: %s", output_expanded);
+		}
 
 	}
 
-	if (fclose(f) != 0) {
-		failf("Failed to flush output file");
-	}
-
-	for (int i = 0; i < num_mips; i++) {
-		free(mips[i].data);
+	for (int i = 0; i < num_real_mips; i++) {
+		free(real_mips[i].data);
 	}
 
 	return 0;
