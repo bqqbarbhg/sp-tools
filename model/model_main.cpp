@@ -2081,6 +2081,7 @@ int main(int argc, char **argv)
 	bool transform_to_root = false;
 	bool do_mesh = false;
 	bool do_anim = false;
+	bool remove_namespaces = false;
 	const char *format_spec = "";
 
 	// -- Parse arguments
@@ -2100,6 +2101,8 @@ int main(int argc, char **argv)
 			combine_everything = true;
 		} else if (!strcmp(arg, "--transform-to-root")) {
 			transform_to_root = true;
+		} else if (!strcmp(arg, "--remove-namespaces")) {
+			remove_namespaces = true;
 		} else if (!strcmp(arg, "--mesh")) {
 			do_mesh = true;
 		} else if (!strcmp(arg, "--anim")) {
@@ -2402,7 +2405,16 @@ int main(int argc, char **argv)
 		for (model_node &node : model.nodes) {
 			spanim_bone bone;
 			bone.parent = node.parent_ix;
-			bone.name = str_pool.insert(node.node->name);
+			if (remove_namespaces) {
+				const char *colon = (const char*)memchr(node.node->name.data, ':', node.node->name.length);
+				if (colon) {
+					bone.name = str_pool.insert(colon + 1, node.node->name.length - 1 - (colon - node.node->name.data));
+				} else {
+					bone.name = str_pool.insert(node.node->name);
+				}
+			} else {
+				bone.name = str_pool.insert(node.node->name);
+			}
 			bones.push_back(std::move(bone));
 		}
 
