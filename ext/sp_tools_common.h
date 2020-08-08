@@ -12,6 +12,8 @@ typedef enum {
 	SP_COMPRESSION_NONE = 0,
 	SP_COMPRESSION_ZSTD = 1,
 
+	SP_COMPRESSION_TYPE_FIRST = SP_COMPRESSION_NONE,
+	SP_COMPRESSION_TYPE_LAST = SP_COMPRESSION_ZSTD,
 	SP_COMPRESSION_FORCE_U32 = 0x7fffffff,
 } sp_compression_type;
 
@@ -137,6 +139,9 @@ typedef enum spfile_section_magic {
 	SPFILE_SECTION_NODES     = 0x65646f6e, // 'node'
 	SPFILE_SECTION_MATERIALS = 0x7374616d, // 'mats'
 	SPFILE_SECTION_MESHES    = 0x6873656d, // 'mesh'
+	SPFILE_SECTION_GEOMETRY  = 0x6d6f6567, // 'geom'
+	SPFILE_SECTION_BVH_NODES = 0x6e687662, // 'bvhn'
+	SPFILE_SECTION_BVH_TRIS  = 0x74687662, // 'bvht'
 	SPFILE_SECTION_VERTEX    = 0x78747276, // 'vrtx'
 	SPFILE_SECTION_INDEX     = 0x78646e69, // 'indx'
 	SPFILE_SECTION_MIP       = 0x2070696d, // 'mip '
@@ -190,6 +195,7 @@ typedef struct spanim_header {
 
 #define SPMDL_MAX_VERTEX_BUFFERS 4
 #define SPMDL_MAX_VERTEX_ATTRIBS 16
+#define SPMDL_BVH_TRIANGLES 16
 
 typedef struct spmdl_vec3
 {
@@ -253,6 +259,7 @@ typedef struct spmdl_mesh
 	uint32_t num_attribs;
 	uint32_t bone_offset;
 	uint32_t num_bones;
+	uint32_t bvh_index;
 	spmdl_vec3 aabb_min;
 	spmdl_vec3 aabb_max;
 	spmdl_buffer vertex_buffers[SPMDL_MAX_VERTEX_BUFFERS];
@@ -260,11 +267,30 @@ typedef struct spmdl_mesh
 	spmdl_attrib attribs[SPMDL_MAX_VERTEX_ATTRIBS];
 } spmdl_mesh;
 
+typedef struct spmdl_bvh_split
+{
+	spmdl_vec3 aabb_min, aabb_max;
+
+	// If non-negative the split is a leaf node containing `num_triangles`
+	// triangles startin from `data_index`.
+	int32_t num_triangles;
+
+	// Offset to child if `num_triangles>=0`, otherwise offset to triangles array
+	uint32_t data_index;
+} spmdl_bvh_split;
+
+typedef struct spmdl_bvh_node
+{
+	spmdl_bvh_split splits[2];
+} spmdl_bvh_node;
+
 typedef struct spmdl_info {
 	uint32_t num_nodes;
 	uint32_t num_bones;
-	uint32_t num_maetrials;
+	uint32_t num_materials;
 	uint32_t num_meshes;
+	uint32_t num_bvh_nodes;
+	uint32_t num_bvh_tris;
 } spmdl_info;
 
 typedef struct spmdl_header {
@@ -274,6 +300,8 @@ typedef struct spmdl_header {
 	spfile_section s_bones;     // spmdl_bone[info.num_bones]
 	spfile_section s_materials; // spmdl_material[info.num_materials]
 	spfile_section s_meshes;    // spmdl_mesh[info.num_meshes]
+	spfile_section s_bvh_nodes; // spmdl_bvh_node[info.num_bvh_nodes]
+	spfile_section s_bvh_tris;  // uint32_t[info.num_bvh_tris * 3]
 	spfile_section s_strings;   // char[uncompressed_size]
 	spfile_section s_vertex;    // char[uncompressed_size]
 	spfile_section s_index;     // char[uncompressed_size]
@@ -301,6 +329,72 @@ typedef struct sptex_header {
 	sptex_info info;
 	spfile_section s_mips[16];
 } sptex_header;
+
+typedef struct spfile_util {
+	const void *data;
+	size_t size;
+	char *strings;
+	size_t strings_size;
+	void *page_to_free;
+	bool failed;
+} spfile_util;
+
+bool spfile_util_init(spfile_util *su, const void *data, size_t size);
+bool spfile_decode_section_to(spfile_util *su, const spfile_section *s, void *buffer);
+void *spfile_decode_section(spfile_util *su, const spfile_section *s);
+bool spfile_decode_strings_to(spfile_util *su, const spfile_section *s, char *buffer);
+char *spfile_decode_strings(spfile_util *su, const spfile_section *s);
+bool spfile_util_failed(spfile_util *su);
+void spfile_util_free(spfile_util *su);
+
+typedef struct spanim_util {
+	spfile_util file;
+} spanim_util;
+
+bool spanim_util_init(spanim_util *su, const void *data, size_t size);
+
+bool spanim_decode_strings_to(spanim_util *su, char *buffer);
+bool spanim_decode_bones_to(spanim_util *su, spanim_bone *buffer);
+bool spanim_decode_animation_to(spanim_util *su, char *buffer);
+
+spanim_header spanim_decode_header(spanim_util *su);
+char *spanim_decode_strings(spanim_util *su);
+spanim_bone *spanim_decode_bones(spanim_util *su);
+char *spanim_decode_animation(spanim_util *su);
+
+typedef struct spmdl_util {
+	spfile_util file;
+} spmdl_util;
+
+bool spmdl_util_init(spmdl_util *su, const void *data, size_t size);
+
+bool spmdl_decode_strings_to(spmdl_util *su, char *buffer);
+bool spmdl_decode_nodes_to(spmdl_util *su, spmdl_node *buffer);
+bool spmdl_decode_bones_to(spmdl_util *su, spmdl_bone *buffer);
+bool spmdl_decode_materials_to(spmdl_util *su, spmdl_material *buffer);
+bool spmdl_decode_meshes_to(spmdl_util *su, spmdl_mesh *buffer);
+bool spmdl_decode_vertex_to(spmdl_util *su, char *buffer);
+bool spmdl_decode_index_to(spmdl_util *su, char *buffer);
+
+spmdl_header spmdl_decode_header(spmdl_util *su);
+char *spmdl_decode_strings(spmdl_util *su);
+spmdl_node *spmdl_decode_nodes(spmdl_util *su);
+spmdl_bone *spmdl_decode_bones(spmdl_util *su);
+spmdl_material *spmdl_decode_materials(spmdl_util *su);
+spmdl_mesh *spmdl_decode_meshes(spmdl_util *su);
+char *spmdl_decode_vertex(spmdl_util *su);
+char *spmdl_decode_index(spmdl_util *su);
+
+typedef struct sptex_util {
+	spfile_util file;
+} sptex_util;
+
+bool sptex_util_init(sptex_util *su, const void *data, size_t size);
+
+bool sptex_decode_mip_to(sptex_util *su, uint32_t index, char *buffer);
+
+sptex_header sptex_decode_header(sptex_util *su);
+char *sptex_decode_mip(sptex_util *su, uint32_t index);
 
 #ifdef __cplusplus
 }

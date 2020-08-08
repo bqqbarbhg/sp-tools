@@ -218,6 +218,332 @@ struct attrib_bounds
 	uint32_t num_components;
 };
 
+#define BVH_MAX_DEPTH 32
+#define BVH_BUILD_SPLITS 64
+#define BVH_SPLIT_MIN_TRIANGLES 16
+#define BVH_NODE_COST 1.0f
+#define BVH_TRI_COST 1.0f
+
+struct bvh_bounds
+{
+	float min[3];
+	float max[3];
+
+	void reset() {
+		min[0] = min[1] = min[2] = +HUGE_VALF;
+		max[0] = max[1] = max[2] = -HUGE_VALF;
+	}
+
+	void extend(float v[3]) {
+		if (v[0] < min[0]) min[0] = v[0];
+		if (v[1] < min[1]) min[1] = v[1];
+		if (v[2] < min[2]) min[2] = v[2];
+		if (v[0] > max[0]) max[0] = v[0];
+		if (v[1] > max[1]) max[1] = v[1];
+		if (v[2] > max[2]) max[2] = v[2];
+	}
+
+	void extend(const bvh_bounds &bounds) {
+		if (bounds.min[0] < min[0]) min[0] = bounds.min[0];
+		if (bounds.min[1] < min[1]) min[1] = bounds.min[1];
+		if (bounds.min[2] < min[2]) min[2] = bounds.min[2];
+		if (bounds.max[0] > max[0]) max[0] = bounds.max[0];
+		if (bounds.max[1] > max[1]) max[1] = bounds.max[1];
+		if (bounds.max[2] > max[2]) max[2] = bounds.max[2];
+	}
+
+	float area() const {
+		float x = max[0] - min[0], y = max[1] - min[1], z = max[2] - min[2];
+		return 2.0f * (x*y + y*z + z*x);
+	}
+
+	void to_spmdl(spmdl_vec3 &out_min, spmdl_vec3 &out_max) const
+	{
+		out_min.x = min[0];
+		out_min.y = min[1];
+		out_min.z = min[2];
+		out_max.x = max[0];
+		out_max.y = max[1];
+		out_max.z = max[2];
+	}
+};
+
+struct bvh_build_triangle
+{
+	float v[3][3];
+
+	float axis_midpoint(int axis) {
+		return (v[0][axis] + v[1][axis] + v[2][axis]) * (1.0f/3.0f);
+	}
+};
+
+struct bvh_build_ctx
+{
+	rh::slice<bvh_build_triangle> triangles;
+	rh::array<spmdl_bvh_node> nodes;
+};
+
+struct bvh_build_bucket {
+	bvh_bounds bounds;       // < Bounds of all the items in this bucket
+	bvh_bounds bounds_right; // < Cumulative bounds for all the buckets from the right
+	uint32_t num;            // < Number of items in the bucket
+};
+
+struct bvh_build_node
+{
+	uint32_t node_index;
+	uint32_t node_split;
+	bvh_bounds bounds;
+	uint32_t triangle_begin;
+	uint32_t num_triangles;
+};
+
+static void bvh_build_leaf(bvh_build_ctx &ctx, const bvh_build_node &parent)
+{
+	if (parent.node_index != ~0u) {
+		spmdl_bvh_split &split = ctx.nodes[parent.node_index].splits[parent.node_split];
+		split.num_triangles = (int32_t)parent.num_triangles;
+		split.data_index = parent.triangle_begin;
+	}
+}
+
+static void bvh_build_sah(bvh_build_ctx &ctx, const bvh_build_node &parent, int depth)
+{
+	bvh_build_bucket buckets[BVH_BUILD_SPLITS];
+
+	bvh_build_node left, right;
+
+	float best_cost = HUGE_VALF;
+	int best_axis = -1;
+	int best_bucket = -1;
+	float parent_area = parent.bounds.area();
+
+	for (int axis = 0; axis < 3; axis++) {
+
+		// Reset all buckets for the axis
+		for (int i = 0; i < BVH_BUILD_SPLITS; i++) {
+			buckets[i].bounds.reset();
+			buckets[i].num = 0;
+		}
+
+		float min = parent.bounds.min[axis];
+		float max = parent.bounds.max[axis];
+		float rcp_scale = (float)BVH_BUILD_SPLITS / (max - min);
+
+		// Insert items into buckets
+		for (uint32_t i = 0; i < parent.num_triangles; i++) {
+			bvh_build_triangle &tri = ctx.triangles.data[parent.triangle_begin + i];
+			float mid = tri.axis_midpoint(axis);
+			int bucket = (int)((mid - min) * rcp_scale);
+			if (bucket < 0) bucket = 0;
+			if (bucket >= BVH_BUILD_SPLITS) bucket = BVH_BUILD_SPLITS - 1;
+			buckets[bucket].bounds.extend(tri.v[0]);
+			buckets[bucket].bounds.extend(tri.v[1]);
+			buckets[bucket].bounds.extend(tri.v[2]);
+			buckets[bucket].num++;
+		}
+
+		// Scan backwards to get `bounds_right`
+		buckets[BVH_BUILD_SPLITS - 1].bounds_right = buckets[BVH_BUILD_SPLITS - 1].bounds;
+		for (int i = BVH_BUILD_SPLITS - 2; i >= 0; i--) {
+			buckets[i].bounds_right = buckets[i].bounds;
+			buckets[i].bounds_right.extend(buckets[i + 1].bounds_right);
+		}
+
+		// Scan forwards to find the best split
+		bvh_bounds bounds_left;
+		bounds_left.reset();
+		uint32_t num_left = 0;
+
+		for (int i = 0; i < BVH_BUILD_SPLITS - 1; i++) {
+			bvh_build_bucket &bucket = buckets[i];
+			bvh_build_bucket &bucket_right = buckets[i + 1];
+			bounds_left.extend(bucket.bounds);
+
+			num_left += bucket.num;
+			uint32_t num_right = parent.num_triangles - num_left;
+			if (num_left == 0 || num_right == 0) continue;
+
+			float area_left = bounds_left.area();
+			float area_right = bucket_right.bounds_right.area();
+			float cost_left = (float)num_left * BVH_TRI_COST;
+			float cost_right = (float)num_right * BVH_TRI_COST;
+			float cost_split = BVH_NODE_COST + (area_left*cost_left + area_right*cost_right) / parent_area;
+
+			if (cost_split < best_cost) {
+				left.bounds = bounds_left;
+				right.bounds = bucket_right.bounds_right;
+				best_cost = cost_split;
+				best_axis = axis;
+				best_bucket = i;
+			}
+		}
+	}
+
+	float leaf_cost = (float)parent.num_triangles * BVH_TRI_COST;
+	if ((depth < BVH_MAX_DEPTH && best_cost < leaf_cost && parent.num_triangles > BVH_SPLIT_MIN_TRIANGLES) || (depth == 0 && best_axis >= 0)) {
+
+		float min = parent.bounds.min[best_axis];
+		float max = parent.bounds.max[best_axis];
+		float rcp_scale = (float)BVH_BUILD_SPLITS / (max - min);
+
+		// Split the items using the exact same predicate
+		bvh_build_triangle *tris = ctx.triangles.data + parent.triangle_begin;
+		bvh_build_triangle *first = tris;
+		bvh_build_triangle *last = tris + parent.num_triangles;
+		while (first != last) {
+			float mid = first->axis_midpoint(best_axis);
+			int bucket = (int)((mid - min) * rcp_scale);
+			if (bucket < 0) bucket = 0;
+			if (bucket >= BVH_BUILD_SPLITS - 1) bucket = BVH_BUILD_SPLITS - 1;
+			if (bucket <= best_bucket) {
+				first++;
+			} else {
+				last--;
+				bvh_build_triangle temp = *first;
+				*first = *last;
+				*last = temp;
+			}
+		}
+
+		left.num_triangles = (uint32_t)(first - tris);
+		right.num_triangles = parent.num_triangles - left.num_triangles;
+		left.triangle_begin = parent.triangle_begin;
+		right.triangle_begin = parent.triangle_begin + left.num_triangles;
+
+		spmdl_bvh_node node;
+		left.bounds.to_spmdl(node.splits[0].aabb_min, node.splits[0].aabb_max);
+		right.bounds.to_spmdl(node.splits[1].aabb_min, node.splits[1].aabb_max);
+
+		right.node_index = left.node_index = (uint32_t)ctx.nodes.size();
+		left.node_split = 0;
+		right.node_split = 1;
+
+		if (parent.node_index != ~0u) {
+			spmdl_bvh_split &parent_split = ctx.nodes[parent.node_index].splits[parent.node_split];
+			parent_split.num_triangles = -1;
+			parent_split.data_index = (uint32_t)ctx.nodes.size();
+		}
+
+		ctx.nodes.push_back(node);
+
+		bvh_build_sah(ctx, left, depth + 1);
+		bvh_build_sah(ctx, right, depth + 1);
+	} else {
+		bvh_build_leaf(ctx, parent);
+	}
+}
+
+struct bvh_build_result
+{
+	rh::array<spmdl_bvh_node> nodes;
+	rh::array<uint32_t> triangles;
+};
+
+static uint32_t build_bvh(bvh_build_result &result, rh::slice<bvh_build_triangle> triangles, bool simd)
+{
+	bvh_build_ctx ctx;
+	ctx.triangles = triangles;
+
+	bvh_build_node root;
+	root.node_index = ~0u;
+	root.node_split = ~0u;
+	root.triangle_begin = 0;
+	root.num_triangles = (uint32_t)triangles.size;
+	root.bounds.reset();
+	for (bvh_build_triangle &tri : triangles) {
+		root.bounds.extend(tri.v[0]);
+		root.bounds.extend(tri.v[1]);
+		root.bounds.extend(tri.v[2]);
+	}
+
+	bvh_build_sah(ctx, root, 0);
+
+	// Only one leaf node
+	if (ctx.nodes.size() == 0) {
+		spmdl_bvh_node node;
+		if (root.num_triangles > 0) {
+			root.bounds.to_spmdl(node.splits[0].aabb_min, node.splits[0].aabb_max);
+		} else {
+			node.splits[0].aabb_min.x = 0.0f;
+			node.splits[0].aabb_min.y = 0.0f;
+			node.splits[0].aabb_min.z = 0.0f;
+			node.splits[0].aabb_max.x = 0.0f;
+			node.splits[0].aabb_max.y = 0.0f;
+			node.splits[0].aabb_max.z = 0.0f;
+		}
+		node.splits[0].num_triangles = root.num_triangles;
+		node.splits[0].data_index = 0;
+		node.splits[1].aabb_max = node.splits[1].aabb_min = node.splits[0].aabb_min;
+		node.splits[1].num_triangles = 0;
+		node.splits[1].data_index = 0;
+		ctx.nodes.push_back(node);
+	}
+
+	uint32_t root_index = (uint32_t)result.nodes.size();
+
+	// Quantize vertices
+	for (spmdl_bvh_node &node : ctx.nodes) {
+		for (spmdl_bvh_split &split : node.splits) {
+			if (split.num_triangles < 0) {
+				split.data_index += root_index;
+				continue;
+			}
+			if (split.num_triangles == 0) {
+				split.aabb_max = split.aabb_min;
+				split.data_index = 0;
+				continue;
+			}
+
+			uint32_t data_index = (uint32_t)result.triangles.size() / 3;
+			for (uint32_t i = 0; i < (uint32_t)split.num_triangles; i++) {
+				bvh_build_triangle tri = triangles.data[split.data_index + i];
+				for (uint32_t j = 0; j < 3; j++) {
+					float x = tri.v[j][0];
+					float y = tri.v[j][1];
+					float z = tri.v[j][2];
+
+					float dx = (x - split.aabb_min.x) / (split.aabb_max.x - split.aabb_min.x);
+					float dy = (y - split.aabb_min.y) / (split.aabb_max.y - split.aabb_min.y);
+					float dz = (z - split.aabb_min.z) / (split.aabb_max.z - split.aabb_min.z);
+
+					int32_t ix = (int32_t)(dx * 1023.0f);
+					int32_t iy = (int32_t)(dy * 1023.0f);
+					int32_t iz = (int32_t)(dz * 1023.0f);
+
+					if (ix < 0) ix = 0;
+					if (iy < 0) iy = 0;
+					if (iz < 0) iz = 0;
+					if (ix > 1023) ix = 1023;
+					if (iy > 1023) iy = 1023;
+					if (iz > 1023) iz = 1023;
+
+					uint32_t packed = ix | iy << 10 | iz << 20;
+					result.triangles.push_back(packed);
+				}
+			}
+
+			split.data_index = data_index;
+
+			// Pad to batches of 4 if using SIMD
+			if (simd) {
+				while (result.triangles.size() / 3 % 4 != 0) {
+					uint32_t a = result.triangles[result.triangles.size() - 3];
+					uint32_t b = result.triangles[result.triangles.size() - 2];
+					uint32_t c = result.triangles[result.triangles.size() - 1];
+					result.triangles.push_back(a);
+					result.triangles.push_back(b);
+					result.triangles.push_back(c);
+				}
+			}
+		}
+
+		result.nodes.push_back(node);
+	}
+
+	return root_index;
+}
+
 static uint32_t hash(const merge_key &key) { return rh::hash_buffer_align4(&key, sizeof(key)); }
 
 mesh_data_format create_mesh_data_format(const vertex_format &format)
@@ -1239,6 +1565,28 @@ attrib_bounds get_attrib_bounds(const mesh_part &part, size_t attrib_ix)
 	return { };
 }
 
+rh::array<bvh_build_triangle> get_mesh_part_bvh_triangles(const mesh_part &part)
+{
+	rh::array<bvh_build_triangle> tris;
+
+	const float *src = part.vertex_data.data();
+	uint32_t pos_offset = part.data_format.position_offset_in_floats;
+	uint32_t stride = part.data_format.vertex_size_in_floats;
+
+	for (uint32_t i = 0; i < part.num_indices; i += 3) {
+		bvh_build_triangle tri;
+		for (uint32_t j = 0; j < 3; j++) {
+			const float *pos = src + pos_offset + part.index_data[i + j] * stride;
+			tri.v[j][0] = pos[0];
+			tri.v[j][1] = pos[1];
+			tri.v[j][2] = pos[2];
+		}
+		tris.push_back(tri);
+	}
+
+	return tris;
+}
+
 struct model_node
 {
 	ufbx_node *node;
@@ -2081,6 +2429,8 @@ int main(int argc, char **argv)
 	bool transform_to_root = false;
 	bool do_mesh = false;
 	bool do_anim = false;
+	bool do_bvh = false;
+	bool bvh_simd = false;
 	bool remove_namespaces = false;
 	const char *format_spec = "";
 
@@ -2107,6 +2457,10 @@ int main(int argc, char **argv)
 			do_mesh = true;
 		} else if (!strcmp(arg, "--anim")) {
 			do_anim = true;
+		} else if (!strcmp(arg, "--bvh")) {
+			do_bvh = true;
+		} else if (!strcmp(arg, "--bvh-simd")) {
+			bvh_simd = true;
 		} else if (left >= 1) {
 			if (!strcmp(arg, "-i") || !strcmp(arg, "--input")) {
 				input_file = argv[++argi];
@@ -2262,6 +2616,7 @@ int main(int argc, char **argv)
 		rh::array<char> sp_vertex;
 		rh::array<char> sp_index;
 		rh::hash_map<ufbx_material*, uint32_t> material_map;
+		bvh_build_result bvh_result;
 
 		sp_nodes.reserve(model.nodes.size());
 		sp_meshes.reserve(parts.size());
@@ -2283,6 +2638,7 @@ int main(int argc, char **argv)
 			sp_mesh.num_vertex_buffers = part.format.num_streams;
 			sp_mesh.num_indices = (uint32_t)part.num_indices;
 			sp_mesh.num_vertices = (uint32_t)part.num_vertices;
+			sp_mesh.bvh_index = ~0u;
 
 			attrib_bounds bounds = get_attrib_bounds(part, part.data_format.position_attrib_index);
 			sp_mesh.aabb_min.x = bounds.min[0];
@@ -2291,6 +2647,11 @@ int main(int argc, char **argv)
 			sp_mesh.aabb_max.x = bounds.max[0];
 			sp_mesh.aabb_max.y = bounds.max[1];
 			sp_mesh.aabb_max.z = bounds.max[2];
+
+			if (do_bvh) {
+				rh::array<bvh_build_triangle> tris = get_mesh_part_bvh_triangles(part);
+				sp_mesh.bvh_index = build_bvh(bvh_result, tris.slice(), bvh_simd);
+			}
 
 			if (part.bones.size() > 0) {
 				sp_mesh.bone_offset = (uint32_t)sp_bones.size();
@@ -2356,16 +2717,20 @@ int main(int argc, char **argv)
 		header.header.version = 1;
 		header.info.num_nodes = (uint32_t)sp_nodes.size();
 		header.info.num_bones = (uint32_t)sp_bones.size();
-		header.info.num_maetrials = (uint32_t)sp_materials.size();
+		header.info.num_materials = (uint32_t)sp_materials.size();
 		header.info.num_meshes = (uint32_t)sp_meshes.size();
+		header.info.num_bvh_nodes = (uint32_t)bvh_result.nodes.size();
+		header.info.num_bvh_tris = (uint32_t)bvh_result.triangles.size() / 3;
 
-		compress_result c_nodes, c_bones, c_materials, c_meshes, c_strings, c_vertex, c_index;
+		compress_result c_nodes, c_bones, c_materials, c_meshes, c_bvh_nodes, c_bvh_tris, c_strings, c_vertex, c_index;
 
 		uint32_t offset = sizeof(header);
 		init_section(offset, header.s_nodes, c_nodes, sp_nodes.slice(), compress_opts, SPFILE_SECTION_NODES);
 		init_section(offset, header.s_bones, c_bones, sp_bones.slice(), compress_opts, SPFILE_SECTION_BONES);
 		init_section(offset, header.s_materials, c_materials, sp_materials.slice(), compress_opts, SPFILE_SECTION_MATERIALS);
 		init_section(offset, header.s_meshes, c_meshes, sp_meshes.slice(), compress_opts, SPFILE_SECTION_MESHES);
+		init_section(offset, header.s_bvh_nodes, c_bvh_nodes, bvh_result.nodes.slice(), compress_opts, SPFILE_SECTION_BVH_NODES);
+		init_section(offset, header.s_bvh_tris, c_bvh_tris, bvh_result.triangles.slice(), compress_opts, SPFILE_SECTION_BVH_TRIS);
 		init_section(offset, header.s_strings, c_strings, str_pool.data.slice(), compress_opts, SPFILE_SECTION_STRINGS);
 		init_section(offset, header.s_vertex, c_vertex, sp_vertex.slice(), compress_opts, SPFILE_SECTION_VERTEX);
 		init_section(offset, header.s_index, c_index, sp_index.slice(), compress_opts, SPFILE_SECTION_INDEX);
@@ -2378,6 +2743,8 @@ int main(int argc, char **argv)
 			write_pod(f, c_bones.data.slice());
 			write_pod(f, c_materials.data.slice());
 			write_pod(f, c_meshes.data.slice());
+			write_pod(f, c_bvh_nodes.data.slice());
+			write_pod(f, c_bvh_tris.data.slice());
 			write_pod(f, c_strings.data.slice());
 			write_pod(f, c_vertex.data.slice());
 			write_pod(f, c_index.data.slice());
