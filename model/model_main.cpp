@@ -2433,6 +2433,7 @@ int main(int argc, char **argv)
 	bool bvh_simd = false;
 	bool remove_namespaces = false;
 	const char *format_spec = "";
+	rh::array<const char*> retained_prefixes;
 
 	// -- Parse arguments
 
@@ -2471,6 +2472,8 @@ int main(int argc, char **argv)
 				if (level <= 0 || level > 20) {
 					failf("Invalid level %d, must be between 1-20", level);
 				}
+			} else if (!strcmp(arg, "--retain-prefix")) {
+				retained_prefixes.push_back(argv[++argi]);
 			} else if (!strcmp(arg, "-j") || !strcmp(arg, "--threads")) {
 				num_threads = atoi(argv[++argi]);
 				if (num_threads <= 0 || num_threads > 10000) failf("Bad number of threads: %d");
@@ -2565,6 +2568,21 @@ int main(int argc, char **argv)
 		add_node(model, &part.mesh->node);
 		for (mesh_bone &bone : part.bones) {
 			add_node(model, bone.node);
+		}
+	}
+
+	// Retain requested nodes
+	for (const char *prefix : retained_prefixes) {
+		size_t prefix_len = strlen(prefix);
+		for (ufbx_node *node : scene->nodes) {
+			if (!strncmp(node->name.data, prefix, prefix_len)) {
+				add_node(model, node);
+			} else if (remove_namespaces) {
+				const char *colon = (const char*)memchr(node->name.data, ':', node->name.length);
+				if (colon && !strncmp(colon + 1, prefix, prefix_len)) {
+					add_node(model, node);
+				}
+			}
 		}
 	}
 
