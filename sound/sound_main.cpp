@@ -145,7 +145,7 @@ int main(int argc, char **argv)
 		if (memcmp(wav->data_id, "data", 4) != 0) failf("wav: Bad data chunk ID: %.4s", wav->fmt_id);
 		uint32_t num_samples = wav->data_size / (wav->num_channels * (wav->bits_per_sample / 8));
 		uint32_t num_channels = wav->num_channels <= 2 ? wav->num_channels : 2;
-		if (file_size > sizeof(wav_header) + wav->data_size) failf("wav: Truncated file");
+		if (file_size < sizeof(wav_header) + wav->data_size) failf("wav: Truncated file");
 
 		uint32_t stride = wav->num_channels*(wav->bits_per_sample/8);
 
