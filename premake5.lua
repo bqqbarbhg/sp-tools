@@ -67,17 +67,13 @@ workspace "sp-tools"
 	filter "options:opengl"
 		defines { "SP_USE_OPENGL=1" }
 
-project "sp-common"
-	kind "StaticLib"
-	language "C++"
-    files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
-    files { "misc/*.natvis" }
-
 project "sp-texcomp"
 	kind "ConsoleApp"
 	language "C++"
 	links { "sp-common" }
     files { "texcomp/**.h", "texcomp/**.c", "texcomp/**.cpp" }
+    files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
+    files { "misc/*.natvis" }
 	debugdir "."
 
 project "sp-model"
@@ -85,6 +81,8 @@ project "sp-model"
 	language "C++"
 	links { "sp-common" }
     files { "model/**.h", "model/**.c", "model/**.cpp" }
+    files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
+    files { "misc/*.natvis" }
 	debugdir "."
 
 project "sp-sound"
@@ -92,5 +90,7 @@ project "sp-sound"
 	language "C++"
 	links { "sp-common" }
     files { "sound/**.h", "sound/**.c", "sound/**.cpp" }
+    files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
+    files { "misc/*.natvis" }
 	debugdir "."
 
