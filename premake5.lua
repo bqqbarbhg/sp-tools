@@ -70,7 +70,6 @@ workspace "sp-tools"
 project "sp-texcomp"
 	kind "ConsoleApp"
 	language "C++"
-	links { "sp-common" }
     files { "texcomp/**.h", "texcomp/**.c", "texcomp/**.cpp" }
     files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
     files { "misc/*.natvis" }
@@ -79,7 +78,6 @@ project "sp-texcomp"
 project "sp-model"
 	kind "ConsoleApp"
 	language "C++"
-	links { "sp-common" }
     files { "model/**.h", "model/**.c", "model/**.cpp" }
     files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
     files { "misc/*.natvis" }
@@ -88,7 +86,6 @@ project "sp-model"
 project "sp-sound"
 	kind "ConsoleApp"
 	language "C++"
-	links { "sp-common" }
     files { "sound/**.h", "sound/**.c", "sound/**.cpp" }
     files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
     files { "misc/*.natvis" }
