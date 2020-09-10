@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <assert.h>
 #include <string.h>
+#include <math.h>
 #include <thread>
 #include <atomic>
 #include <vector>
