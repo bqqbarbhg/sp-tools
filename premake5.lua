@@ -91,3 +91,12 @@ project "sp-sound"
     files { "misc/*.natvis" }
 	debugdir "."
 
+project "sp-envmap"
+	kind "ConsoleApp"
+	language "C++"
+    files { "envmap/**.h", "envmap/**.c", "envmap/**.cpp" }
+    files { "ext/**.h", "ext/**.c", "ext/**.cpp" }
+    files { "misc/*.natvis" }
+	debugdir "."
+
+
